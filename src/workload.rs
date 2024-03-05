@@ -61,6 +61,7 @@ impl<'a> ToValue for ContextRefMut<'a> {
     }
 }
 
+//TODO: create new function refs to call alloy functions
 /// Stores the name and hash together.
 /// Name is used for message formatting, hash is used for fast function lookup.
 #[derive(Debug, Clone)]

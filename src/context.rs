@@ -6,6 +6,13 @@ use std::io;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::sync::Arc;
 
+use alloy_json_rpc::{RpcError, RpcParam, RpcReturn};
+use alloy_primitives::U64;
+use alloy_rpc_client::{ClientBuilder, RpcClient};
+use alloy_rpc_types::BlockNumberOrTag;
+use alloy_transport::TransportErrorKind;
+use alloy_transport::{BoxTransport, Transport};
+use alloy_transport_http::Http;
 use anyhow::anyhow;
 use chrono::Utc;
 use hdrhistogram::Histogram;
@@ -54,6 +61,15 @@ fn ssl_context(conf: &&ConnectionConf) -> Result<Option<SslContext>, CassError> 
     }
 }
 
+// TODO: MODIFY! YIELD PROVIDER?
+pub async fn eth_connect(
+    conf: &ConnectionConf,
+) -> Result<RpcClient<Http<reqwest::Client>>, CassError> {
+    let provider_url = std::env::var("HTTP_PROVIDER_URL").unwrap();
+    let client = ClientBuilder::default().reqwest_http(provider_url.parse().unwrap());
+    Ok(client)
+}
+
 /// Configures connection to Cassandra.
 pub async fn connect(conf: &ConnectionConf) -> Result<scylla::Session, CassError> {
     let profile = ExecutionProfile::builder()
@@ -70,6 +86,10 @@ pub async fn connect(conf: &ConnectionConf) -> Result<scylla::Session, CassError
         .build()
         .await
         .map_err(|e| CassError(CassErrorKind::FailedToConnect(conf.addresses.clone(), e)))
+}
+
+pub struct NodeInfo {
+    pub chain_id: U64,
 }
 
 pub struct ClusterInfo {
@@ -101,6 +121,10 @@ impl CassError {
         };
         CassError(kind)
     }
+
+    fn eth_rpc(err: RpcError<TransportErrorKind>) -> CassError {
+        CassError(CassErrorKind::EthRpc(err))
+    }
 }
 
 #[derive(Debug)]
@@ -129,6 +153,7 @@ pub enum CassErrorKind {
     Prepare(String, QueryError),
     Overloaded(QueryInfo, QueryError),
     QueryExecution(QueryInfo, QueryError),
+    EthRpc(RpcError<TransportErrorKind>),
 }
 
 impl CassError {
@@ -155,6 +180,9 @@ impl CassError {
             }
             CassErrorKind::QueryExecution(q, e) => {
                 write!(buf, "Failed to execute query {q}: {e}")
+            }
+            CassErrorKind::EthRpc(q) => {
+                write!(buf, "Failed to execute JSON-RPC {q}")
             }
         }
     }
@@ -215,6 +243,28 @@ impl SessionStats {
         }
     }
 
+    /*
+    pub fn complete_eth_request<T, Params, Resp, E>(&mut self, duration: Duration, rs: &Result<RpcCall<T, Params, Resp>, RpcError<E>>)
+    where
+        T: Clone + Transport,
+        Params: RpcParam,
+        Resp: RpcReturn,
+    {
+        self.queue_length -= 1;
+        let duration_ns = duration.as_nanos().clamp(1, u64::MAX as u128) as u64;
+        self.resp_times_ns.record(duration_ns).unwrap();
+        self.req_count += 1;
+        match rs {
+            // If call successful increment row count => call_count
+            Ok(rs) => self.row_count += 1,
+            Err(e) => {
+                self.req_error_count += 1;
+                self.req_errors.insert(format!("json rpc failed"));
+            }
+        }
+    }
+    */
+
     /// Resets all accumulators
     pub fn reset(&mut self) {
         self.req_error_count = 0;
@@ -247,8 +297,8 @@ impl Default for SessionStats {
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
 pub struct Context {
-    session: Arc<scylla::Session>,
-    statements: HashMap<String, Arc<PreparedStatement>>,
+    session: Arc<RpcClient<Http<reqwest::Client>>>,
+    statements: HashMap<String, Arc<String>>,
     stats: TryLock<SessionStats>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -266,7 +316,7 @@ unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
 impl Context {
-    pub fn new(session: scylla::Session) -> Context {
+    pub fn new(session: RpcClient<Http<reqwest::Client>>) -> Context {
         Context {
             session: Arc::new(session),
             statements: HashMap::new(),
@@ -292,66 +342,74 @@ impl Context {
         })
     }
 
-    /// Returns cluster metadata such as cluster name and cassandra version.
-    pub async fn cluster_info(&self) -> Result<Option<ClusterInfo>, CassError> {
-        let cql = "SELECT cluster_name, release_version FROM system.local";
-        let rs = self
-            .session
-            .query(cql, ())
-            .await
-            .map_err(|e| CassError::query_execution_error(cql, &[], e))?;
-        if let Some(rows) = rs.rows {
-            if let Some(row) = rows.into_iter().next() {
-                if let Ok((name, cassandra_version)) = row.into_typed() {
-                    return Ok(Some(ClusterInfo {
-                        name,
-                        cassandra_version,
-                    }));
-                }
-            }
+    /// Returns node metadata such as node name and node version.
+    pub async fn cluster_info<E>(&self) -> Result<Option<NodeInfo>, RpcError<E>> {
+        let request = self.session.prepare("eth_chainId", ());
+        let res = request.await;
+        if let Ok(chain_id) = res {
+            return Ok(Some(NodeInfo { chain_id }));
         }
         Ok(None)
     }
 
     /// Prepares a statement and stores it in an internal statement map for future use.
-    pub async fn prepare(&mut self, key: &str, cql: &str) -> Result<(), CassError> {
+    pub async fn prepare(&mut self, key: &str, call: &str, params: Value) -> Result<(), CassError> {
+        //TODO: handle this error
+        /*
         let statement = self
             .session
-            .prepare(cql)
-            .await
-            .map_err(|e| CassError::prepare_error(cql, e))?;
-        self.statements.insert(key.to_string(), Arc::new(statement));
+            .make_request(call, params).box_params();
+        */
+        self.statements
+            .insert(key.to_string(), Arc::new(call.to_string()));
         Ok(())
     }
 
-    /// Executes an ad-hoc CQL statement with no parameters. Does not prepare.
-    pub async fn execute(&self, cql: &str) -> Result<(), CassError> {
+    /// Executes an ad-hoc alloy JSON-RPC statement with no parameters. Does not prepare.
+    pub async fn execute(&self, call: &str) -> Result<(), CassError> {
         let start_time = self.stats.try_lock().unwrap().start_request();
-        let rs = self.session.query(cql, ()).await;
+        let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
+            .session
+            .prepare(
+                "eth_getBlockByNumber",
+                (BlockNumberOrTag::Number(19351083u64), true),
+            )
+            .await;
         let duration = Instant::now() - start_time;
+        /*
         self.stats
             .try_lock()
             .unwrap()
-            .complete_request(duration, &rs);
-        rs.map_err(|e| CassError::query_execution_error(cql, &[], e))?;
+            .complete_eth_request(duration, &rs);
+        */
+        rs.map_err(|e| CassError::eth_rpc(e));
         Ok(())
     }
 
     /// Executes a statement prepared and registered earlier by a call to `prepare`.
-    pub async fn execute_prepared(&self, key: &str, params: Value) -> Result<(), CassError> {
+    pub async fn execute_prepared(&self, key: &str, param: Value) -> Result<(), CassError> {
+        /*
         let statement = self
             .statements
             .get(key)
-            .ok_or_else(|| CassError(CassErrorKind::PreparedStatementNotFound(key.to_string())))?;
-        let params = bind::to_scylla_query_params(&params)?;
+            .ok_or_else(|| key.to_string())?;
+        */
         let start_time = self.stats.try_lock().unwrap().start_request();
-        let rs = self.session.execute(statement, params.clone()).await;
+        let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
+            .session
+            .prepare(
+                "eth_getBlockByNumber",
+                (BlockNumberOrTag::Number(10000000u64), true),
+            )
+            .await;
         let duration = Instant::now() - start_time;
+        /*
         self.stats
             .try_lock()
             .unwrap()
-            .complete_request(duration, &rs);
-        rs.map_err(|e| CassError::query_execution_error(statement.get_statement(), &params, e))?;
+            .complete_eth_request(duration, &rs);
+        */
+        rs.map_err(|e| CassError::eth_rpc(e));
         Ok(())
     }
 
@@ -410,21 +468,23 @@ mod bind {
                 };
 
                 let keys = borrowed.keys();
-                let values: Result<Vec<Option<CqlValue>>, _> = borrowed.values()
-                    .map(|value| to_scylla_value(&value.clone())
-                    .map(Some)).collect();
-                let fields: Vec<(String, Option<CqlValue>)> = keys.into_iter()
+                let values: Result<Vec<Option<CqlValue>>, _> = borrowed
+                    .values()
+                    .map(|value| to_scylla_value(&value.clone()).map(Some))
+                    .collect();
+                let fields: Vec<(String, Option<CqlValue>)> = keys
+                    .into_iter()
                     .zip(values?.into_iter())
                     .filter(|&(key, _)| key != "_keyspace" && key != "_type_name")
                     .map(|(key, value)| (key.to_string(), value))
                     .collect();
-                let udt = CqlValue::UserDefinedType{
+                let udt = CqlValue::UserDefinedType {
                     keyspace: keyspace,
                     type_name: type_name,
                     fields: fields,
                 };
                 Ok(udt)
-            },
+            }
             Value::Any(obj) => {
                 let obj = obj.borrow_ref().unwrap();
                 let h = obj.type_hash();

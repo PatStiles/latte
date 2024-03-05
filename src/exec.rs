@@ -12,9 +12,10 @@ use std::time::Instant;
 use tokio_stream::wrappers::IntervalStream;
 
 use crate::error::Result;
+use crate::workload::Workload;
 use crate::{
     BenchmarkStats, BoundedCycleCounter, InterruptHandler, Interval, Progress, Recorder, Sampler,
-    Workload, WorkloadStats,
+    WorkloadStats,
 };
 
 /// Returns a stream emitting `rate` events per second.

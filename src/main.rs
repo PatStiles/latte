@@ -30,7 +30,7 @@ use crate::progress::Progress;
 use crate::report::{Report, RunConfigCmp};
 use crate::sampler::Sampler;
 use crate::stats::{BenchmarkCmp, BenchmarkStats, Recorder};
-use crate::workload::{FnRef, Program, Workload, WorkloadStats, LOAD_FN};
+use crate::workload::{Workload, FnRef, Program, WorkloadStats, LOAD_FN};
 
 mod config;
 mod context;
@@ -106,21 +106,21 @@ fn find_workload(workload: &Path) -> PathBuf {
 }
 
 /// Connects to the server and returns the session
-async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<ClusterInfo>)> {
+async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<NodeInfo>)> {
     eprintln!("info: Connecting to {:?}... ", conf.addresses);
-    let session = context::connect(conf).await?;
+    let session = context::eth_connect(conf).await?;
     let session = Context::new(session);
     let cluster_info = session.cluster_info().await?;
     eprintln!(
         "info: Connected to {} running Cassandra version {}",
         cluster_info
             .as_ref()
-            .map(|c| c.name.as_str())
-            .unwrap_or("unknown"),
+            .map(|c| c.chain_id.to_string())
+            .unwrap_or("unknown".to_string()),
         cluster_info
             .as_ref()
-            .map(|c| c.cassandra_version.as_str())
-            .unwrap_or("unknown")
+            .map(|c| c.chain_id.to_string())
+            .unwrap_or("unknown".to_string())
     );
     Ok((session, cluster_info))
 }
@@ -215,10 +215,12 @@ async fn run(conf: RunCommand) -> Result<()> {
     }
 
     let (mut session, cluster_info) = connect(&conf.connection).await?;
+    /*
     if let Some(cluster_info) = cluster_info {
         conf.cluster_name = Some(cluster_info.name);
         conf.cass_version = Some(cluster_info.cassandra_version);
     }
+    */
 
     if program.has_prepare() {
         eprintln!("info: Preparing...");

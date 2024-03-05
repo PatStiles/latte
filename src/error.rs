@@ -1,4 +1,7 @@
 use crate::context::CassError;
+use alloy_json_rpc::RpcError;
+use alloy_transport::TransportErrorKind;
+
 use err_derive::*;
 use hdrhistogram::serialization::interval_log::IntervalLogWriterError;
 use hdrhistogram::serialization::V2DeflateSerializeError;
@@ -38,6 +41,9 @@ pub enum LatteError {
 
     #[error(display = "Interrupted")]
     Interrupted,
+
+    #[error(display = "Eth error: {}", _0)]
+    Eth(#[source] RpcError<TransportErrorKind>),
 }
 
 pub type Result<T> = std::result::Result<T, LatteError>;

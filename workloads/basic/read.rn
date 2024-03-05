@@ -20,9 +20,6 @@ pub async fn erase(ctx) {
 }
 
 pub async fn prepare(ctx) {
-    ctx.load_cycle_count = ROW_COUNT;
-    ctx.prepare(INSERT, `INSERT INTO ${KEYSPACE}.${TABLE}(id) VALUES (:id)`).await?;
-    ctx.prepare(READ, `SELECT * FROM ${KEYSPACE}.${TABLE} WHERE id = :id`).await?;
 }
 
 pub async fn load(ctx, i) {

@@ -1,5 +1,6 @@
 use crate::error::Result;
-use crate::{config, Interval, Workload, WorkloadStats};
+use crate::workload::Workload;
+use crate::{config, Interval, WorkloadStats};
 use futures::channel::mpsc::Sender;
 use futures::SinkExt;
 use std::time::Instant;
