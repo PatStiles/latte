@@ -333,7 +333,8 @@ pub struct RunCommand {
     pub cluster_name: Option<String>,
 
     #[clap(skip)]
-    pub cass_version: Option<String>,
+    pub chain_id: Option<String>,
+
 }
 
 impl RunCommand {
@@ -366,7 +367,7 @@ impl RunCommand {
     pub fn default_output_file_name(&self, extension: &str) -> PathBuf {
         let mut components = vec![self.name()];
         components.extend(self.cluster_name.iter().map(|x| x.replace(' ', "_")));
-        components.extend(self.cass_version.iter().cloned());
+        components.extend(self.chain_id.iter().cloned());
         components.extend(self.tags.iter().cloned());
         components.extend(self.rate.map(|r| format!("r{r}")));
         components.push(format!("p{}", self.concurrency));

@@ -108,7 +108,7 @@ fn find_workload(workload: &Path) -> PathBuf {
 /// Connects to the server and returns the session
 async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<NodeInfo>)> {
     eprintln!("info: Connecting to {:?}... ", conf.addresses);
-    let session = context::eth_connect(conf).await?;
+    let session = context::connect(conf).await?;
     let session = Context::new(session);
     let cluster_info = session.cluster_info().await?;
     eprintln!(
@@ -214,13 +214,10 @@ async fn run(conf: RunCommand) -> Result<()> {
         exit(255);
     }
 
-    let (mut session, cluster_info) = connect(&conf.connection).await?;
-    /*
-    if let Some(cluster_info) = cluster_info {
-        conf.cluster_name = Some(cluster_info.name);
-        conf.cass_version = Some(cluster_info.cassandra_version);
+    let (mut session, node_info) = connect(&conf.connection).await?;
+    if let Some(node_info) = node_info {
+        conf.cluster_name = Some(node_info.chain_id.to_string());
     }
-    */
 
     if program.has_prepare() {
         eprintln!("info: Preparing...");

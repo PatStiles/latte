@@ -462,7 +462,7 @@ impl<'a> Display for RunConfigCmp<'a> {
                 OptionDisplay(conf.cluster_name.clone())
             }),
             self.line("Cass. version", "", |conf| {
-                OptionDisplay(conf.cass_version.clone())
+                OptionDisplay(conf.chain_id.clone())
             }),
             self.line("Tags", "", |conf| conf.tags.iter().join(", ")),
             self.line("Workload", "", |conf| {

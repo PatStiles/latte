@@ -31,10 +31,8 @@ use rune::runtime::{Object, Shared, TypeInfo, VmError};
 use rune::{Any, Value};
 use rust_embed::RustEmbed;
 use scylla::frame::response::result::CqlValue;
-use scylla::prepared_statement::PreparedStatement;
 use scylla::transport::errors::{DbError, NewSessionError, QueryError};
-use scylla::transport::session::PoolSize;
-use scylla::{ExecutionProfile, QueryResult, SessionBuilder};
+use scylla::QueryResult;
 use statrs::distribution::Normal;
 use tokio::time::{Duration, Instant};
 use try_lock::TryLock;
@@ -62,7 +60,7 @@ fn ssl_context(conf: &&ConnectionConf) -> Result<Option<SslContext>, CassError> 
 }
 
 // TODO: MODIFY! YIELD PROVIDER?
-pub async fn eth_connect(
+pub async fn connect(
     conf: &ConnectionConf,
 ) -> Result<RpcClient<Http<reqwest::Client>>, CassError> {
     let provider_url = std::env::var("HTTP_PROVIDER_URL").unwrap();
@@ -70,31 +68,8 @@ pub async fn eth_connect(
     Ok(client)
 }
 
-/// Configures connection to Cassandra.
-pub async fn connect(conf: &ConnectionConf) -> Result<scylla::Session, CassError> {
-    let profile = ExecutionProfile::builder()
-        .consistency(conf.consistency.scylla_consistency())
-        .request_timeout(Some(Duration::from_secs(60))) // no request timeout
-        .build();
-
-    SessionBuilder::new()
-        .known_nodes(&conf.addresses)
-        .pool_size(PoolSize::PerShard(conf.count))
-        .user(&conf.user, &conf.password)
-        .ssl_context(ssl_context(&conf)?)
-        .default_execution_profile_handle(profile.into_handle())
-        .build()
-        .await
-        .map_err(|e| CassError(CassErrorKind::FailedToConnect(conf.addresses.clone(), e)))
-}
-
 pub struct NodeInfo {
     pub chain_id: U64,
-}
-
-pub struct ClusterInfo {
-    pub name: String,
-    pub cassandra_version: String,
 }
 
 #[derive(Any, Debug)]
