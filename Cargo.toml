@@ -56,11 +56,11 @@ tracing-subscriber = "0.3"
 try-lock = "0.2.3"
 uuid = { version = "1.1", features = ["v4"] }
 alloy-primitives = "0.6.0"
-alloy-rpc-types = { git = "https://github.com/alloy-rs/alloy", rev = "76c70fb" }
-alloy-json-rpc = { git = "https://github.com/alloy-rs/alloy", rev = "76c70fb" }
-alloy-rpc-client = { git = "https://github.com/alloy-rs/alloy", rev = "76c70fb" }
-alloy-transport-http = { git = "https://github.com/alloy-rs/alloy", rev = "76c70fb" }
-alloy-transport = { git = "https://github.com/alloy-rs/alloy", rev = "76c70fb" }
+alloy-rpc-types = { git = "https://github.com/alloy-rs/alloy", rev = "d5967ab" }
+alloy-json-rpc = { git = "https://github.com/alloy-rs/alloy", rev = "d5967ab" }
+alloy-rpc-client = { git = "https://github.com/alloy-rs/alloy", rev = "d5967ab" }
+alloy-transport-http = { git = "https://github.com/alloy-rs/alloy", rev = "d5967ab" }
+alloy-transport = { git = "https://github.com/alloy-rs/alloy", rev = "d5967ab" }
 reqwest = "0.11.24"
 
 [dev-dependencies]

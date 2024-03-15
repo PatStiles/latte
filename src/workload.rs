@@ -5,13 +5,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use alloy_json_rpc::Request;
+use alloy_json_rpc::RpcError;
+use alloy_rpc_client::RpcCall;
+use alloy_transport::TransportErrorKind;
 use hdrhistogram::Histogram;
 use rune::runtime::{AnyObj, Args, RuntimeContext, Shared, VmError};
 use rune::termcolor::{ColorChoice, StandardStream};
 use rune::{Any, Diagnostics, Module, Source, Sources, ToValue, Unit, Value, Vm};
+use serde_json::value::RawValue;
 use try_lock::TryLock;
 
-use crate::error::LatteError;
+use crate::error::FloodError;
 use crate::{context, CassError, CassErrorKind, Context, SessionStats};
 
 /// Wraps a reference to Session that can be converted to a Rune `Value`
@@ -93,13 +98,20 @@ pub struct Program {
 }
 
 impl Program {
+    pub fn default() -> Self {
+        Program {
+            sources: Arc::new(Sources::default()),
+            context: Arc::new(RuntimeContext::default()),
+            unit: Arc::new(Unit::default()),
+        }
+    }
     /// Performs some basic sanity checks of the workload script source and prepares it
     /// for fast execution. Does not create VM yet.
     ///
     /// # Parameters
     /// - `script`: source code in Rune language
     /// - `params`: parameter values that will be exposed to the script by the `params!` macro
-    pub fn new(source: Source, params: HashMap<String, String>) -> Result<Program, LatteError> {
+    pub fn new(source: Source, params: HashMap<String, String>) -> Result<Program, FloodError> {
         let mut context_module = Module::default();
         context_module.ty::<Context>().unwrap();
         context_module
@@ -129,7 +141,9 @@ impl Program {
 
         let mut latte_module = Module::with_crate("latte");
         latte_module.function(&["blob"], context::blob).unwrap();
-        latte_module.function(&["now_timestamp"], context::now_timestamp).unwrap();
+        latte_module
+            .function(&["now_timestamp"], context::now_timestamp)
+            .unwrap();
         latte_module.function(&["hash"], context::hash).unwrap();
         latte_module.function(&["hash2"], context::hash2).unwrap();
         latte_module
@@ -206,7 +220,7 @@ impl Program {
         })
     }
 
-    fn load_sources(source: Source) -> Result<Sources, LatteError> {
+    fn load_sources(source: Source) -> Result<Sources, FloodError> {
         let mut sources = Sources::new();
         if let Some(path) = source.path() {
             if let Some(parent) = path.parent() {
@@ -218,12 +232,12 @@ impl Program {
     }
 
     // Tries to add `lib.rn` to `sources` if it exists in the same directory as the main source.
-    fn try_insert_lib_source(parent: &Path, sources: &mut Sources) -> Result<(), LatteError> {
+    fn try_insert_lib_source(parent: &Path, sources: &mut Sources) -> Result<(), FloodError> {
         let lib_src = parent.join("lib.rn");
         if lib_src.is_file() {
             sources.insert(
                 Source::from_path(&lib_src)
-                    .map_err(|e| LatteError::ScriptRead(lib_src.clone(), e))?,
+                    .map_err(|e| FloodError::ScriptRead(lib_src.clone(), e))?,
             );
         }
         Ok(())
@@ -247,22 +261,22 @@ impl Program {
         Vm::new(self.context.clone(), self.unit.clone())
     }
 
-    /// Checks if Rune function call result is an error and if so, converts it into [`LatteError`].
-    /// Cassandra errors are returned as [`LatteError::Cassandra`].
-    /// All other errors are returned as [`LatteError::FunctionResult`].
+    /// Checks if Rune function call result is an error and if so, converts it into [`FloodError`].
+    /// Cassandra errors are returned as [`FloodError::Cassandra`].
+    /// All other errors are returned as [`FloodError::FunctionResult`].
     /// If result is not an `Err`, it is returned as-is.
     ///
     /// This is needed because execution of the function could actually run till completion just
     /// fine, but the function could return an error value, and in this case we should not
     /// ignore it.
-    fn convert_error(&self, function_name: &str, result: Value) -> Result<Value, LatteError> {
+    fn convert_error(&self, function_name: &str, result: Value) -> Result<Value, FloodError> {
         match result {
             Value::Result(result) => match result.take().unwrap() {
                 Ok(value) => Ok(value),
                 Err(Value::Any(e)) => {
                     if e.borrow_ref().unwrap().type_hash() == CassError::type_hash() {
                         let e = e.take_downcast::<CassError>().unwrap();
-                        return Err(LatteError::Cassandra(e));
+                        return Err(FloodError::Cassandra(e));
                     }
                     let mut msg = String::new();
                     let mut buf = String::new();
@@ -272,9 +286,9 @@ impl Program {
                             msg = format!("{e:?}")
                         }
                     });
-                    Err(LatteError::FunctionResult(function_name.to_string(), msg))
+                    Err(FloodError::FunctionResult(function_name.to_string(), msg))
                 }
-                Err(other) => Err(LatteError::FunctionResult(
+                Err(other) => Err(FloodError::FunctionResult(
                     function_name.to_string(),
                     format!("{other:?}"),
                 )),
@@ -291,11 +305,11 @@ impl Program {
         &self,
         fun: &FnRef,
         args: impl Args + Send,
-    ) -> Result<Value, LatteError> {
+    ) -> Result<Value, FloodError> {
         let handle_err = |e: VmError| {
             let mut out = StandardStream::stderr(ColorChoice::Auto);
             let _ = e.emit(&mut out, &self.sources);
-            LatteError::ScriptExecError(fun.name.to_string(), e)
+            FloodError::ScriptExecError(fun.name.to_string(), e)
         };
         let execution = self.vm().send_execute(fun.hash, args).map_err(handle_err)?;
         let result = execution.async_complete().await.map_err(handle_err)?;
@@ -325,7 +339,7 @@ impl Program {
     /// Calls the script's `init` function.
     /// Called once at the beginning of the benchmark.
     /// Typically used to prepare statements.
-    pub async fn prepare(&mut self, context: &mut Context) -> Result<(), LatteError> {
+    pub async fn prepare(&mut self, context: &mut Context) -> Result<(), FloodError> {
         let context = ContextRefMut::new(context);
         self.async_call(&FnRef::new(PREPARE_FN), (context,)).await?;
         Ok(())
@@ -333,7 +347,7 @@ impl Program {
 
     /// Calls the script's `schema` function.
     /// Typically used to create database schema.
-    pub async fn schema(&mut self, context: &mut Context) -> Result<(), LatteError> {
+    pub async fn schema(&mut self, context: &mut Context) -> Result<(), FloodError> {
         let context = ContextRefMut::new(context);
         self.async_call(&FnRef::new(SCHEMA_FN), (context,)).await?;
         Ok(())
@@ -341,7 +355,7 @@ impl Program {
 
     /// Calls the script's `erase` function.
     /// Typically used to remove the data from the database before running the benchmark.
-    pub async fn erase(&mut self, context: &mut Context) -> Result<(), LatteError> {
+    pub async fn erase(&mut self, context: &mut Context) -> Result<(), FloodError> {
         let context = ContextRefMut::new(context);
         self.async_call(&FnRef::new(ERASE_FN), (context,)).await?;
         Ok(())
@@ -397,37 +411,53 @@ impl Default for WorkloadState {
 }
 
 pub struct Workload {
-    context: Context,
+    context: Context, // Need to expose client... we want to bypass rune...
     program: Program,
     function: FnRef,
     state: TryLock<WorkloadState>,
+    cli: Option<Request<Box<RawValue>>>,
 }
 
 impl Workload {
-    pub fn new(context: Context, program: Program, function: FnRef) -> Workload {
+    pub fn new(
+        context: Context,
+        program: Program,
+        function: FnRef,
+        cli: Option<Request<Box<RawValue>>>,
+    ) -> Workload {
         Workload {
             context,
             program,
             function,
             state: TryLock::new(WorkloadState::default()),
+            cli,
         }
     }
 
-    pub fn clone(&self) -> Result<Self, LatteError> {
+    pub fn clone(&self) -> Result<Self, FloodError> {
         Ok(Workload {
             context: self.context.clone()?,
             // make a deep copy to avoid congestion on Arc ref counts used heavily by Rune
             program: self.program.unshare(),
             function: self.function.clone(),
             state: TryLock::new(WorkloadState::default()),
+            cli: self.cli.clone(),
         })
     }
 
     /// Executes a single cycle of a workload.
     /// This should be idempotent –
+    // NOTE: as is not idempotent but this eliminates as many abstractions while allowing for bypassing all the Rune madness
     /// the generated action should be a function of the iteration number.
     /// Returns the cycle number and the end time of the query.
-    pub async fn run(&self, cycle: u64) -> Result<(u64, Instant), LatteError> {
+    pub async fn run(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
+        match self.cli {
+            Some(_) => self.run_cli(cycle).await,
+            None => self.run_rune(cycle).await,
+        }
+    }
+
+    pub async fn run_rune(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
         let start_time = Instant::now();
         let context = SessionRef::new(&self.context);
         let result = self
@@ -440,12 +470,30 @@ impl Workload {
         state.fn_stats.operation_completed(end_time - start_time);
         match result {
             Ok(_) => Ok((cycle, end_time)),
-            Err(LatteError::Cassandra(CassError(CassErrorKind::Overloaded(_, _)))) => {
+            Err(FloodError::Cassandra(CassError(CassErrorKind::Overloaded(_, _)))) => {
                 // don't stop on overload errors;
                 // they are being counted by the context stats anyways
                 Ok((cycle, end_time))
             }
             Err(e) => Err(e),
+        }
+    }
+
+    pub async fn run_cli(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
+        let start_time = Instant::now();
+        let result: Result<(), RpcError<TransportErrorKind>> = RpcCall::new(
+            self.cli.clone().unwrap(),
+            self.context.session.transport().clone(),
+        )
+        .boxed()
+        .await;
+        let end_time = Instant::now();
+        let mut state = self.state.try_lock().unwrap();
+        state.fn_stats.operation_completed(end_time - start_time);
+        match result {
+            Ok(_) => Ok((cycle, end_time)),
+            //TODO: all but eth call have "deserialization error: invalid type: boolean `false`, expected unit at line 1 column 5"
+            Err(e) => Ok((cycle, end_time)),
         }
     }
 

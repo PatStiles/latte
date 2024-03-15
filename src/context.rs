@@ -6,12 +6,11 @@ use std::io;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::sync::Arc;
 
-use alloy_json_rpc::{RpcError, RpcParam, RpcReturn};
+use alloy_json_rpc::{Request, RpcError, RpcParam, RpcReturn};
 use alloy_primitives::U64;
 use alloy_rpc_client::{ClientBuilder, RpcClient};
 use alloy_rpc_types::BlockNumberOrTag;
 use alloy_transport::TransportErrorKind;
-use alloy_transport::{BoxTransport, Transport};
 use alloy_transport_http::Http;
 use anyhow::anyhow;
 use chrono::Utc;
@@ -19,7 +18,6 @@ use hdrhistogram::Histogram;
 use itertools::Itertools;
 use metrohash::{MetroHash128, MetroHash64};
 use openssl::error::ErrorStack;
-use openssl::ssl::{SslContext, SslContextBuilder, SslFiletype, SslMethod};
 use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -32,37 +30,17 @@ use rune::{Any, Value};
 use rust_embed::RustEmbed;
 use scylla::frame::response::result::CqlValue;
 use scylla::transport::errors::{DbError, NewSessionError, QueryError};
-use scylla::QueryResult;
+use serde_json::value::RawValue;
 use statrs::distribution::Normal;
 use tokio::time::{Duration, Instant};
 use try_lock::TryLock;
 use uuid::{Variant, Version};
 
 use crate::config::ConnectionConf;
-use crate::LatteError;
-
-fn ssl_context(conf: &&ConnectionConf) -> Result<Option<SslContext>, CassError> {
-    if conf.ssl {
-        let mut ssl = SslContextBuilder::new(SslMethod::tls())?;
-        if let Some(path) = &conf.ssl_ca_cert_file {
-            ssl.set_ca_file(path)?;
-        }
-        if let Some(path) = &conf.ssl_cert_file {
-            ssl.set_certificate_file(path, SslFiletype::PEM)?;
-        }
-        if let Some(path) = &conf.ssl_key_file {
-            ssl.set_private_key_file(path, SslFiletype::PEM)?;
-        }
-        Ok(Some(ssl.build()))
-    } else {
-        Ok(None)
-    }
-}
+use crate::FloodError;
 
 // TODO: MODIFY! YIELD PROVIDER?
-pub async fn connect(
-    conf: &ConnectionConf,
-) -> Result<RpcClient<Http<reqwest::Client>>, CassError> {
+pub async fn connect(conf: &ConnectionConf) -> Result<RpcClient<Http<reqwest::Client>>, CassError> {
     let provider_url = std::env::var("HTTP_PROVIDER_URL").unwrap();
     let client = ClientBuilder::default().reqwest_http(provider_url.parse().unwrap());
     Ok(client)
@@ -204,6 +182,7 @@ impl SessionStats {
         Instant::now()
     }
 
+    /*
     pub fn complete_request(&mut self, duration: Duration, rs: &Result<QueryResult, QueryError>) {
         self.queue_length -= 1;
         let duration_ns = duration.as_nanos().clamp(1, u64::MAX as u128) as u64;
@@ -217,11 +196,12 @@ impl SessionStats {
             }
         }
     }
-
-    /*
-    pub fn complete_eth_request<T, Params, Resp, E>(&mut self, duration: Duration, rs: &Result<RpcCall<T, Params, Resp>, RpcError<E>>)
-    where
-        T: Clone + Transport,
+    */
+    pub fn complete_request<Params, Resp, E>(
+        &mut self,
+        duration: Duration,
+        rs: &Result<Resp, RpcError<E>>,
+    ) where
         Params: RpcParam,
         Resp: RpcReturn,
     {
@@ -238,7 +218,6 @@ impl SessionStats {
             }
         }
     }
-    */
 
     /// Resets all accumulators
     pub fn reset(&mut self) {
@@ -272,8 +251,9 @@ impl Default for SessionStats {
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
 pub struct Context {
-    session: Arc<RpcClient<Http<reqwest::Client>>>,
-    statements: HashMap<String, Arc<String>>,
+    //TODO: this may not be the best... but for now it works
+    pub session: Arc<RpcClient<Http<reqwest::Client>>>,
+    statements: HashMap<String, Arc<Request<Box<RawValue>>>>,
     stats: TryLock<SessionStats>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
@@ -305,7 +285,7 @@ impl Context {
     /// The new clone gets fresh statistics.
     /// The user data gets passed through serialization and deserialization to avoid
     /// accidental data sharing.
-    pub fn clone(&self) -> Result<Self, LatteError> {
+    pub fn clone(&self) -> Result<Self, FloodError> {
         let serialized = rmp_serde::to_vec(&self.data)?;
         let deserialized: Value = rmp_serde::from_slice(&serialized)?;
         Ok(Context {
@@ -318,8 +298,8 @@ impl Context {
     }
 
     /// Returns node metadata such as node name and node version.
-    pub async fn cluster_info<E>(&self) -> Result<Option<NodeInfo>, RpcError<E>> {
-        let request = self.session.prepare("eth_chainId", ());
+    pub async fn node_info<E>(&self) -> Result<Option<NodeInfo>, RpcError<E>> {
+        let request = self.session.request("eth_chainId", ());
         let res = request.await;
         if let Ok(chain_id) = res {
             return Ok(Some(NodeInfo { chain_id }));
@@ -328,15 +308,16 @@ impl Context {
     }
 
     /// Prepares a statement and stores it in an internal statement map for future use.
-    pub async fn prepare(&mut self, key: &str, call: &str, params: Value) -> Result<(), CassError> {
-        //TODO: handle this error
-        /*
-        let statement = self
-            .session
-            .make_request(call, params).box_params();
-        */
-        self.statements
-            .insert(key.to_string(), Arc::new(call.to_string()));
+    pub async fn prepare(
+        &mut self,
+        key: &str,
+        call: &'static str,
+        params: Value,
+    ) -> Result<(), CassError> {
+        //TODO: formulate parsing from rune::Value -> Alloy::RpcParams
+        let params = (BlockNumberOrTag::Number(19351083u64), true);
+        let req = self.session.make_request(call, params).box_params();
+        self.statements.insert(key.to_string(), Arc::new(req));
         Ok(())
     }
 
@@ -345,7 +326,7 @@ impl Context {
         let start_time = self.stats.try_lock().unwrap().start_request();
         let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
             .session
-            .prepare(
+            .request(
                 "eth_getBlockByNumber",
                 (BlockNumberOrTag::Number(19351083u64), true),
             )
@@ -355,7 +336,7 @@ impl Context {
         self.stats
             .try_lock()
             .unwrap()
-            .complete_eth_request(duration, &rs);
+            .complete_request(duration, &rs);
         */
         rs.map_err(|e| CassError::eth_rpc(e));
         Ok(())
@@ -363,6 +344,7 @@ impl Context {
 
     /// Executes a statement prepared and registered earlier by a call to `prepare`.
     pub async fn execute_prepared(&self, key: &str, param: Value) -> Result<(), CassError> {
+        //Resp: RpcReturn,
         /*
         let statement = self
             .statements
@@ -370,9 +352,10 @@ impl Context {
             .ok_or_else(|| key.to_string())?;
         */
         let start_time = self.stats.try_lock().unwrap().start_request();
+        //TODO: this error occurs because the rest of this is not generic yet.
         let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
             .session
-            .prepare(
+            .request(
                 "eth_getBlockByNumber",
                 (BlockNumberOrTag::Number(10000000u64), true),
             )
@@ -382,7 +365,7 @@ impl Context {
         self.stats
             .try_lock()
             .unwrap()
-            .complete_eth_request(duration, &rs);
+            .complete_request(duration, &rs);
         */
         rs.map_err(|e| CassError::eth_rpc(e));
         Ok(())

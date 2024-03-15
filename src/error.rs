@@ -8,7 +8,7 @@ use hdrhistogram::serialization::V2DeflateSerializeError;
 use std::path::PathBuf;
 
 #[derive(Debug, Error)]
-pub enum LatteError {
+pub enum FloodError {
     #[error(display = "Context data could not be serialized: {}", _0)]
     ContextDataEncode(#[source] rmp_serde::encode::Error),
 
@@ -46,4 +46,4 @@ pub enum LatteError {
     Eth(#[source] RpcError<TransportErrorKind>),
 }
 
-pub type Result<T> = std::result::Result<T, LatteError>;
+pub type Result<T> = std::result::Result<T, FloodError>;

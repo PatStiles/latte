@@ -9,11 +9,12 @@ use clap::Parser;
 use hdrhistogram::serialization::interval_log::Tag;
 use hdrhistogram::serialization::{interval_log, V2DeflateSerializer};
 use itertools::Itertools;
+use report::RpcReport;
 use rune::Source;
 use search_path::SearchPath;
 use tokio::runtime::{Builder, Runtime};
 
-use config::RunCommand;
+use config::{RpcCommand, RunCommand};
 
 use crate::config::{
     AppConfig, Command, ConnectionConf, HdrCommand, Interval, LoadCommand, SchemaCommand,
@@ -22,15 +23,15 @@ use crate::config::{
 use crate::context::*;
 use crate::context::{CassError, CassErrorKind, Context, SessionStats};
 use crate::cycle::BoundedCycleCounter;
-use crate::error::{LatteError, Result};
+use crate::error::{FloodError, Result};
 use crate::exec::{par_execute, ExecutionOptions};
 use crate::interrupt::InterruptHandler;
 use crate::plot::plot_graph;
 use crate::progress::Progress;
-use crate::report::{Report, RunConfigCmp};
+use crate::report::{Report, RpcConfigCmp, RunConfigCmp};
 use crate::sampler::Sampler;
 use crate::stats::{BenchmarkCmp, BenchmarkStats, Recorder};
-use crate::workload::{Workload, FnRef, Program, WorkloadStats, LOAD_FN};
+use crate::workload::{FnRef, Program, Workload, WorkloadStats, LOAD_FN};
 
 mod config;
 mod context;
@@ -65,13 +66,27 @@ fn load_report_or_abort(path: &Path) -> Report {
     }
 }
 
+fn load_rpc_report_or_abort(path: &Path) -> RpcReport {
+    match RpcReport::load(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "error: Failed to read report from {}: {}",
+                path.display(),
+                e
+            );
+            exit(1)
+        }
+    }
+}
+
 /// Reads the workload script from a file and compiles it.
 fn load_workload_script(workload: &Path, params: &[(String, String)]) -> Result<Program> {
     let workload = find_workload(workload)
         .canonicalize()
         .unwrap_or_else(|_| workload.to_path_buf());
     eprintln!("info: Loading workload script {}...", workload.display());
-    let src = Source::from_path(&workload).map_err(|e| LatteError::ScriptRead(workload, e))?;
+    let src = Source::from_path(&workload).map_err(|e| FloodError::ScriptRead(workload, e))?;
     Program::new(src, params.iter().cloned().collect())
 }
 
@@ -108,19 +123,15 @@ fn find_workload(workload: &Path) -> PathBuf {
 /// Connects to the server and returns the session
 async fn connect(conf: &ConnectionConf) -> Result<(Context, Option<NodeInfo>)> {
     eprintln!("info: Connecting to {:?}... ", conf.addresses);
-    let session = context::connect(conf).await?;
-    let session = Context::new(session);
-    let cluster_info = session.cluster_info().await?;
+    let client = context::connect(conf).await?;
+    let session = Context::new(client);
+    let cluster_info = session.node_info().await?;
     eprintln!(
-        "info: Connected to {} running Cassandra version {}",
+        "info: Connected to network {}",
         cluster_info
             .as_ref()
             .map(|c| c.chain_id.to_string())
             .unwrap_or("unknown".to_string()),
-        cluster_info
-            .as_ref()
-            .map(|c| c.chain_id.to_string())
-            .unwrap_or("unknown".to_string())
     );
     Ok((session, cluster_info))
 }
@@ -173,7 +184,7 @@ async fn load(conf: LoadCommand) -> Result<()> {
 
     let interrupt = Arc::new(InterruptHandler::install());
     eprintln!("info: Loading data...");
-    let loader = Workload::new(session.clone()?, program.clone(), FnRef::new(LOAD_FN));
+    let loader = Workload::new(session.clone()?, program.clone(), FnRef::new(LOAD_FN), None);
     let load_options = ExecutionOptions {
         duration: config::Interval::Count(load_count),
         rate: conf.rate,
@@ -227,7 +238,8 @@ async fn run(conf: RunCommand) -> Result<()> {
         }
     }
 
-    let runner = Workload::new(session.clone()?, program.clone(), function);
+    //TODO: this is kinda a mess given it moves between context and conf.... make it cleaner
+    let runner = Workload::new(session.clone()?, program.clone(), function, None);
     let interrupt = Arc::new(InterruptHandler::install());
     if conf.warmup_duration.is_not_zero() {
         eprintln!("info: Warming up...");
@@ -249,7 +261,7 @@ async fn run(conf: RunCommand) -> Result<()> {
     }
 
     if interrupt.is_interrupted() {
-        return Err(LatteError::Interrupted);
+        return Err(FloodError::Interrupted);
     }
 
     eprintln!("info: Running benchmark...");
@@ -305,6 +317,101 @@ async fn run(conf: RunCommand) -> Result<()> {
     Ok(())
 }
 
+async fn rpc(conf: RpcCommand) -> Result<()> {
+    let mut conf = conf.set_timestamp_if_empty();
+    //TODO: simplify this? maybe option maybe a different workload
+    let function = FnRef::new("");
+    let compare = conf.baseline.as_ref().map(|p| load_rpc_report_or_abort(p));
+
+    let (session, node_info) = connect(&conf.connection).await?;
+    if let Some(node_info) = node_info {
+        conf.cluster_name = Some(node_info.chain_id.to_string());
+    }
+
+    //TODO: Load from Clap
+    let (call, params) = conf.parse_params().unwrap();
+    println!("{:?}", params);
+    //NOTE: this leaks memory and is a consequence of the limitations in the alloy crate.
+    let call: &'static str = call.leak();
+    let req = session.session.make_request(call, params).box_params();
+    let runner = Workload::new(session.clone()?, Program::default(), function, Some(req));
+    let interrupt = Arc::new(InterruptHandler::install());
+    if conf.warmup_duration.is_not_zero() {
+        eprintln!("info: Warming up...");
+        let warmup_options = ExecutionOptions {
+            duration: conf.warmup_duration,
+            rate: None,
+            threads: conf.threads,
+            concurrency: conf.concurrency,
+        };
+        par_execute(
+            "Warming up...",
+            &warmup_options,
+            Interval::Unbounded,
+            runner.clone()?,
+            interrupt.clone(),
+            !conf.quiet,
+        )
+        .await?;
+    }
+
+    if interrupt.is_interrupted() {
+        return Err(FloodError::Interrupted);
+    }
+
+    eprintln!("info: Running benchmark...");
+
+    println!(
+        "{}",
+        RpcConfigCmp {
+            v1: &conf,
+            v2: compare.as_ref().map(|c| &c.conf),
+        }
+    );
+
+    let exec_options = ExecutionOptions {
+        duration: conf.run_duration,
+        concurrency: conf.concurrency,
+        rate: conf.rate,
+        threads: conf.threads,
+    };
+
+    report::print_log_header();
+    let stats = par_execute(
+        "Running...",
+        &exec_options,
+        conf.sampling_interval,
+        runner,
+        interrupt.clone(),
+        !conf.quiet,
+    )
+    .await?;
+
+    let stats_cmp = BenchmarkCmp {
+        v1: &stats,
+        v2: compare.as_ref().map(|c| &c.result),
+    };
+    println!();
+    println!("{}", &stats_cmp);
+
+    let path = conf
+        .output
+        .clone()
+        .unwrap_or_else(|| conf.default_output_file_name("json"));
+
+    let report = RpcReport::new(conf, stats);
+    match report.save(&path) {
+        Ok(()) => {
+            eprintln!("info: Saved report to {}", path.display());
+        }
+        Err(e) => {
+            eprintln!("error: Failed to save report to {}: {}", path.display(), e);
+            exit(1);
+        }
+    }
+    Ok(())
+}
+
 async fn show(conf: ShowCommand) -> Result<()> {
     let report1 = load_report_or_abort(&conf.report);
     let report2 = conf.baseline.map(|p| load_report_or_abort(&p));
@@ -337,7 +444,7 @@ async fn export_hdr_log(conf: HdrCommand) -> Result<()> {
     let stdout_stream;
     let mut out: Box<dyn Write> = match conf.output {
         Some(path) => {
-            output_file = File::create(&path).map_err(|e| LatteError::OutputFileCreate(path, e))?;
+            output_file = File::create(&path).map_err(|e| FloodError::OutputFileCreate(path, e))?;
             Box::new(output_file)
         }
         None => {
@@ -379,6 +486,7 @@ async fn async_main(command: Command) -> Result<()> {
         Command::Schema(config) => schema(config).await?,
         Command::Load(config) => load(config).await?,
         Command::Run(config) => run(config).await?,
+        Command::Rpc(config) => rpc(config).await?,
         Command::Show(config) => show(config).await?,
         Command::Hdr(config) => export_hdr_log(config).await?,
         Command::Plot(config) => plot_graph(config).await?,
@@ -402,6 +510,7 @@ fn main() {
     let command = AppConfig::parse().command;
     let thread_count = match &command {
         Command::Run(cmd) => cmd.threads.get(),
+        Command::Rpc(cmd) => cmd.threads.get(),
         Command::Load(cmd) => cmd.threads.get(),
         _ => 1,
     };
