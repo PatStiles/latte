@@ -1,5 +1,4 @@
 use core::fmt;
-use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -64,42 +63,6 @@ impl Report {
         Ok(())
     }
 }
-
-/*
-/// Keeps all data we want to save in a report:
-/// run metadata, configuration and results
-#[derive(Serialize, Deserialize)]
-pub struct RpcReport {
-    pub conf: RpcCommand,
-    pub percentiles: Vec<f32>,
-    pub result: BenchmarkStats,
-}
-
-impl RpcReport {
-    /// Creates a new report from given configuration and results
-    pub fn new(conf: RpcCommand, result: BenchmarkStats) -> RpcReport {
-        let percentiles: Vec<f32> = Percentile::iter().map(|p| p.value() as f32).collect();
-        RpcReport {
-            conf,
-            percentiles,
-            result,
-        }
-    }
-    /// Loads benchmark results from a JSON file
-    pub fn load(path: &Path) -> Result<RpcReport, ReportLoadError> {
-        let file = fs::File::open(path)?;
-        let report = serde_json::from_reader(file)?;
-        Ok(report)
-    }
-
-    /// Saves benchmark results to a JSON file
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        let f = fs::File::create(path)?;
-        serde_json::to_writer_pretty(f, &self)?;
-        Ok(())
-    }
-}
-*/
 
 /// A displayable, optional value with an optional error.
 /// Controls formatting options such as precision.
@@ -441,128 +404,6 @@ fn fmt_cmp_header(display_significance: bool) -> String {
     );
     format!("{}", style(header).yellow().bold().for_stdout())
 }
-
-/*
-pub struct RunConfigCmp<'a> {
-    pub v1: &'a RunCommand,
-    pub v2: Option<&'a RunCommand>,
-}
-
-impl RunConfigCmp<'_> {
-    fn line<S, M, F>(&self, label: S, unit: &str, f: F) -> Box<Line<M, &RunCommand, F>>
-    where
-        S: ToString,
-        M: Display + Rational,
-        F: Fn(&RunCommand) -> M,
-    {
-        Box::new(Line::new(
-            label.to_string(),
-            unit.to_string(),
-            0,
-            self.v1,
-            self.v2,
-            f,
-        ))
-    }
-
-    fn format_time(&self, conf: &RunCommand, format: &str) -> String {
-        conf.timestamp
-            .and_then(|ts| {
-                NaiveDateTime::from_timestamp_opt(ts, 0)
-                    .map(|utc| Local.from_utc_datetime(&utc).format(format).to_string())
-            })
-            .unwrap_or_default()
-    }
-
-    /// Returns the set union of custom user parameters in both configurations.
-    fn param_names(&self) -> BTreeSet<&String> {
-        let mut keys = BTreeSet::new();
-        keys.extend(self.v1.params.iter().map(|x| &x.0));
-        if let Some(v2) = self.v2 {
-            keys.extend(v2.params.iter().map(|x| &x.0));
-        }
-        keys
-    }
-}
-
-impl<'a> Display for RunConfigCmp<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", fmt_section_header("CONFIG"))?;
-        if self.v2.is_some() {
-            writeln!(f, "{}", fmt_cmp_header(false))?;
-        }
-
-        let lines: Vec<Box<dyn Display>> = vec![
-            self.line("Date", "", |conf| self.format_time(conf, "%a, %d %b %Y")),
-            self.line("Time", "", |conf| self.format_time(conf, "%H:%M:%S %z")),
-            self.line("Cluster", "", |conf| {
-                OptionDisplay(conf.cluster_name.clone())
-            }),
-            self.line("Cass. version", "", |conf| {
-                OptionDisplay(conf.chain_id.clone())
-            }),
-            self.line("Tags", "", |conf| conf.tags.iter().join(", ")),
-            self.line("Workload", "", |conf| {
-                conf.workload
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            }),
-        ];
-
-        for l in lines {
-            writeln!(f, "{l}")?;
-        }
-
-        writeln!(f, "{}", fmt_horizontal_line()).unwrap();
-
-        let param_names = self.param_names();
-        if !param_names.is_empty() {
-            for k in param_names {
-                let label = format!("-P {k}");
-                let line = self.line(label.as_str(), "", |conf| Quantity::from(conf.get_param(k)));
-                writeln!(f, "{line}").unwrap();
-            }
-            writeln!(f, "{}", fmt_horizontal_line()).unwrap();
-        }
-
-        let lines: Vec<Box<dyn Display>> = vec![
-            self.line("Threads", "", |conf| Quantity::from(conf.threads)),
-            self.line("Connections", "", |conf| {
-                Quantity::from(conf.connection.count)
-            }),
-            self.line("Concurrency", "req", |conf| {
-                Quantity::from(conf.concurrency)
-            }),
-            self.line("Max rate", "op/s", |conf| Quantity::from(conf.rate)),
-            self.line("Warmup", "s", |conf| {
-                Quantity::from(conf.warmup_duration.seconds())
-            }),
-            self.line("└─", "op", |conf| {
-                Quantity::from(conf.warmup_duration.count())
-            }),
-            self.line("Run time", "s", |conf| {
-                Quantity::from(conf.run_duration.seconds()).with_precision(1)
-            }),
-            self.line("└─", "op", |conf| {
-                Quantity::from(conf.run_duration.count())
-            }),
-            self.line("Sampling", "s", |conf| {
-                Quantity::from(conf.sampling_interval.seconds()).with_precision(1)
-            }),
-            self.line("└─", "op", |conf| {
-                Quantity::from(conf.sampling_interval.count())
-            }),
-        ];
-
-        for l in lines {
-            writeln!(f, "{l}")?;
-        }
-        Ok(())
-    }
-}
-*/
-
 pub struct RpcConfigCmp<'a> {
     pub v1: &'a RpcCommand,
     pub v2: Option<&'a RpcCommand>,
