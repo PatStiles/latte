@@ -202,6 +202,7 @@ impl ValueEnum for Consistency {
     }
 }
 
+/*
 #[derive(Parser, Debug, Serialize, Deserialize)]
 #[command(next_line_help = true)]
 pub struct SchemaCommand {
@@ -250,7 +251,9 @@ pub struct LoadCommand {
     #[clap(flatten)]
     pub connection: ConnectionConf,
 }
+*/
 
+/*
 #[derive(Parser, Debug, Serialize, Deserialize)]
 #[command(next_line_help = true)]
 pub struct RunCommand {
@@ -380,6 +383,7 @@ impl RunCommand {
         PathBuf::from(format!("{}.{extension}", components.join(".")))
     }
 }
+*/
 
 // Taken from cast cli: https://github.com/foundry-rs/foundry/blob/master/crates/cast/bin/cmd/rpc.rs
 /// CLI arguments for `cast rpc`.
@@ -597,20 +601,20 @@ pub enum Command {
     ///
     /// The function should remove the old schema if present.
     /// Calling this is likely to remove data from the database.
-    Schema(SchemaCommand),
+    //Schema(SchemaCommand),
 
     /// Erases and generates fresh data needed for the benchmark by invoking the `erase` and `load`
     /// functions of the workload script.
     ///
     /// Running this command is typically needed by read benchmarks.
     /// You need to create the schema before.
-    Load(LoadCommand),
+    //Load(LoadCommand),
 
     /// Runs the benchmark.
     ///
     /// Prints nicely formatted statistics to the standard output.
     /// Additionally dumps all data into a JSON report file.
-    Run(RunCommand),
+    //Run(RunCommand),
 
     /// Displays the report(s) of previously executed benchmark(s).
     ///
@@ -636,8 +640,8 @@ pub enum Command {
 
 #[derive(Parser, Debug)]
 #[command(
-name = "Cassandra Latency and Throughput Tester",
-author = "Piotr Kołaczkowski <pkolaczk@datastax.com>",
+name = "Ethereum Node Latency and Throughput Tester",
+author = "Patrick Stiles <https://github.com/PatStiles>",
 version = clap::crate_version ! (),
 )]
 pub struct AppConfig {

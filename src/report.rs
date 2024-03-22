@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use statrs::statistics::Statistics;
 use strum::IntoEnumIterator;
 
-use crate::config::{RpcCommand, RunCommand};
+use crate::config::RpcCommand;
 use crate::stats::{
     BenchmarkCmp, BenchmarkStats, Bucket, Mean, Percentile, Sample, Significance, TimeDistribution,
 };
@@ -35,14 +35,14 @@ pub enum ReportLoadError {
 /// run metadata, configuration and results
 #[derive(Serialize, Deserialize)]
 pub struct Report {
-    pub conf: RunCommand,
+    pub conf: RpcCommand,
     pub percentiles: Vec<f32>,
     pub result: BenchmarkStats,
 }
 
 impl Report {
     /// Creates a new report from given configuration and results
-    pub fn new(conf: RunCommand, result: BenchmarkStats) -> Report {
+    pub fn new(conf: RpcCommand, result: BenchmarkStats) -> Report {
         let percentiles: Vec<f32> = Percentile::iter().map(|p| p.value() as f32).collect();
         Report {
             conf,
@@ -65,6 +65,7 @@ impl Report {
     }
 }
 
+/*
 /// Keeps all data we want to save in a report:
 /// run metadata, configuration and results
 #[derive(Serialize, Deserialize)]
@@ -98,6 +99,7 @@ impl RpcReport {
         Ok(())
     }
 }
+*/
 
 /// A displayable, optional value with an optional error.
 /// Controls formatting options such as precision.
@@ -440,6 +442,7 @@ fn fmt_cmp_header(display_significance: bool) -> String {
     format!("{}", style(header).yellow().bold().for_stdout())
 }
 
+/*
 pub struct RunConfigCmp<'a> {
     pub v1: &'a RunCommand,
     pub v2: Option<&'a RunCommand>,
@@ -558,6 +561,7 @@ impl<'a> Display for RunConfigCmp<'a> {
         Ok(())
     }
 }
+*/
 
 pub struct RpcConfigCmp<'a> {
     pub v1: &'a RpcCommand,
@@ -626,7 +630,7 @@ impl<'a> Display for RpcConfigCmp<'a> {
             self.line("Concurrency", "req", |conf| {
                 Quantity::from(conf.concurrency)
             }),
-            self.line("Max rate", "op/s", |conf| Quantity::from(conf.rate)),
+            self.line("Max rate(s)", "op/s", |conf| Quantity::from(conf.rate)),
             self.line("Warmup", "s", |conf| {
                 Quantity::from(conf.warmup_duration.seconds())
             }),

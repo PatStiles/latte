@@ -4,11 +4,14 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
+use std::string::ParseError;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use alloy_json_rpc::{Request, RpcError, RpcParam, RpcReturn};
 use alloy_primitives::U64;
 use alloy_rpc_client::{ClientBuilder, RpcClient};
+use alloy_rpc_types::pubsub::Params;
 use alloy_rpc_types::BlockNumberOrTag;
 use alloy_transport::TransportErrorKind;
 use alloy_transport_http::Http;
@@ -32,16 +35,17 @@ use scylla::frame::response::result::CqlValue;
 use scylla::transport::errors::{DbError, NewSessionError, QueryError};
 use serde_json::value::RawValue;
 use statrs::distribution::Normal;
-use tokio::time::{Duration, Instant};
+//use tokio::time::{Duration, Instant};
 use try_lock::TryLock;
 use uuid::{Variant, Version};
+use std::fmt::Debug;
 
-use crate::config::ConnectionConf;
 use crate::FloodError;
 
 // TODO: MODIFY! YIELD PROVIDER?
-pub async fn connect(conf: &ConnectionConf) -> Result<RpcClient<Http<reqwest::Client>>, CassError> {
-    let provider_url = std::env::var("HTTP_PROVIDER_URL").unwrap();
+pub async fn connect() -> Result<RpcClient<Http<reqwest::Client>>, FloodError> {
+    //TODO: add custom connection error
+    let provider_url = std::env::var("HTTP_PROVIDER_URL").map_err(|e| FloodError::EnvVar(e)).unwrap();
     let client = ClientBuilder::default().reqwest_http(provider_url.parse().unwrap());
     Ok(client)
 }
@@ -50,15 +54,16 @@ pub struct NodeInfo {
     pub chain_id: U64,
 }
 
+/*
 #[derive(Any, Debug)]
-pub struct CassError(pub CassErrorKind);
+pub struct ContextError(pub ContextErrorKind);
 
-impl CassError {
-    fn prepare_error(cql: &str, err: QueryError) -> CassError {
-        CassError(CassErrorKind::Prepare(cql.to_string(), err))
+impl ContextError {
+    fn prepare_error(cql: &str, err: QueryError) -> ContextError {
+        ContextError(ContextErrorKind::Prepare(cql.to_string(), err))
     }
 
-    fn query_execution_error(cql: &str, params: &[CqlValue], err: QueryError) -> CassError {
+    fn query_execution_error(cql: &str, params: &[CqlValue], err: QueryError) -> ContextError {
         let query = QueryInfo {
             cql: cql.to_string(),
             params: params.iter().map(|v| format!("{v:?}")).collect(),
@@ -69,14 +74,14 @@ impl CassError {
             | QueryError::DbError(
                 DbError::Overloaded | DbError::ReadTimeout { .. } | DbError::WriteTimeout { .. },
                 _,
-            ) => CassErrorKind::Overloaded(query, err),
-            _ => CassErrorKind::QueryExecution(query, err),
+            ) => ContextErrorKind::Overloaded(query, err),
+            _ => ContextErrorKind::QueryExecution(query, err),
         };
-        CassError(kind)
+        ContextError(kind)
     }
 
-    fn eth_rpc(err: RpcError<TransportErrorKind>) -> CassError {
-        CassError(CassErrorKind::EthRpc(err))
+    fn eth_rpc(err: RpcError<TransportErrorKind>) -> ContextError {
+        ContextError(ContextErrorKind::EthRpc(err))
     }
 }
 
@@ -98,50 +103,50 @@ impl Display for QueryInfo {
 }
 
 #[derive(Debug)]
-pub enum CassErrorKind {
-    SslConfiguration(ErrorStack),
+pub enum ContextErrorKind {
     FailedToConnect(Vec<String>, NewSessionError),
+    /*
     PreparedStatementNotFound(String),
     UnsupportedType(TypeInfo),
     Prepare(String, QueryError),
     Overloaded(QueryInfo, QueryError),
     QueryExecution(QueryInfo, QueryError),
     EthRpc(RpcError<TransportErrorKind>),
+    */
 }
 
-impl CassError {
+impl ContextError {
     pub fn display(&self, buf: &mut String) -> std::fmt::Result {
         use std::fmt::Write;
         match &self.0 {
-            CassErrorKind::SslConfiguration(e) => {
-                write!(buf, "SSL configuration error: {e}")
-            }
-            CassErrorKind::FailedToConnect(hosts, e) => {
+            ContextErrorKind::FailedToConnect(hosts, e) => {
                 write!(buf, "Could not connect to {}: {}", hosts.join(","), e)
             }
-            CassErrorKind::PreparedStatementNotFound(s) => {
+            /*
+            ContextErrorKind::PreparedStatementNotFound(s) => {
                 write!(buf, "Prepared statement not found: {s}")
             }
-            CassErrorKind::UnsupportedType(s) => {
+            ContextErrorKind::UnsupportedType(s) => {
                 write!(buf, "Unsupported type: {s}")
             }
-            CassErrorKind::Prepare(q, e) => {
+            ContextErrorKind::Prepare(q, e) => {
                 write!(buf, "Failed to prepare query \"{q}\": {e}")
             }
-            CassErrorKind::Overloaded(q, e) => {
+            ContextErrorKind::Overloaded(q, e) => {
                 write!(buf, "Overloaded when executing query {q}: {e}")
             }
-            CassErrorKind::QueryExecution(q, e) => {
+            ContextErrorKind::QueryExecution(q, e) => {
                 write!(buf, "Failed to execute query {q}: {e}")
             }
-            CassErrorKind::EthRpc(q) => {
-                write!(buf, "Failed to execute JSON-RPC {q}")
+            ContextErrorKind::EthRpc(q) => {
+                write!(buf, "Failed to call JSON-RPC {q}")
             }
+            */
         }
     }
 }
 
-impl Display for CassError {
+impl Display for ContextError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = String::new();
         self.display(&mut buf).unwrap();
@@ -149,17 +154,13 @@ impl Display for CassError {
     }
 }
 
-impl From<ErrorStack> for CassError {
-    fn from(e: ErrorStack) -> CassError {
-        CassError(CassErrorKind::SslConfiguration(e))
-    }
-}
-
-impl std::error::Error for CassError {}
+impl std::error::Error for ContextError {}
+*/
 
 #[derive(Clone, Debug)]
 pub struct SessionStats {
     pub req_count: u64,
+    pub req_succ_count: u64,
     pub req_errors: HashSet<String>,
     pub req_error_count: u64,
     pub row_count: u64,
@@ -182,26 +183,12 @@ impl SessionStats {
         Instant::now()
     }
 
-    /*
-    pub fn complete_request(&mut self, duration: Duration, rs: &Result<QueryResult, QueryError>) {
-        self.queue_length -= 1;
-        let duration_ns = duration.as_nanos().clamp(1, u64::MAX as u128) as u64;
-        self.resp_times_ns.record(duration_ns).unwrap();
-        self.req_count += 1;
-        match rs {
-            Ok(rs) => self.row_count += rs.rows.as_ref().map(|r| r.len()).unwrap_or(0) as u64,
-            Err(e) => {
-                self.req_error_count += 1;
-                self.req_errors.insert(format!("{e}"));
-            }
-        }
-    }
-    */
     pub fn complete_request<Params, Resp, E>(
         &mut self,
         duration: Duration,
         rs: &Result<Resp, RpcError<E>>,
     ) where
+        E: Debug,
         Params: RpcParam,
         Resp: RpcReturn,
     {
@@ -211,10 +198,10 @@ impl SessionStats {
         self.req_count += 1;
         match rs {
             // If call successful increment row count => call_count
-            Ok(rs) => self.row_count += 1,
+            Ok(rs) => self.req_succ_count += 1,
             Err(e) => {
                 self.req_error_count += 1;
-                self.req_errors.insert(format!("json rpc failed"));
+                self.req_errors.insert(format!("{:?}", e));
             }
         }
     }
@@ -222,8 +209,7 @@ impl SessionStats {
     /// Resets all accumulators
     pub fn reset(&mut self) {
         self.req_error_count = 0;
-        self.row_count = 0;
-        self.req_count = 0;
+        self.req_succ_count = 0;
         self.mean_queue_length = 0.0;
         self.req_errors.clear();
         self.resp_times_ns.clear();
@@ -237,6 +223,7 @@ impl Default for SessionStats {
     fn default() -> Self {
         SessionStats {
             req_count: 0,
+            req_succ_count: 0,
             req_errors: HashSet::new(),
             req_error_count: 0,
             row_count: 0,
@@ -254,7 +241,7 @@ pub struct Context {
     //TODO: this may not be the best... but for now it works
     pub session: Arc<RpcClient<Http<reqwest::Client>>>,
     statements: HashMap<String, Arc<Request<Box<RawValue>>>>,
-    stats: TryLock<SessionStats>,
+    pub stats: TryLock<SessionStats>,
     #[rune(get, set, add_assign, copy)]
     pub load_cycle_count: u64,
     #[rune(get)]
@@ -307,13 +294,14 @@ impl Context {
         Ok(None)
     }
 
+    /*
     /// Prepares a statement and stores it in an internal statement map for future use.
     pub async fn prepare(
         &mut self,
         key: &str,
         call: &'static str,
         params: Value,
-    ) -> Result<(), CassError> {
+    ) -> Result<(), ContextError> {
         //TODO: formulate parsing from rune::Value -> Alloy::RpcParams
         let params = (BlockNumberOrTag::Number(19351083u64), true);
         let req = self.session.make_request(call, params).box_params();
@@ -322,29 +310,27 @@ impl Context {
     }
 
     /// Executes an ad-hoc alloy JSON-RPC statement with no parameters. Does not prepare.
-    pub async fn execute(&self, call: &str) -> Result<(), CassError> {
+    pub async fn execute(&self, call: &str) -> Result<(), ContextError> {
         let start_time = self.stats.try_lock().unwrap().start_request();
-        let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
+        let rs: Result<Box<RawValue>, RpcError<TransportErrorKind>> = self
             .session
             .request(
                 "eth_getBlockByNumber",
                 (BlockNumberOrTag::Number(19351083u64), true),
             )
             .await;
+        println!("{:?}", rs);
         let duration = Instant::now() - start_time;
-        /*
         self.stats
             .try_lock()
             .unwrap()
-            .complete_request(duration, &rs);
-        */
-        rs.map_err(|e| CassError::eth_rpc(e));
+            .complete_request::<Params, Box<serde_json::value::RawValue>, TransportErrorKind>(duration, &rs);
+        rs.map_err(|e| ContextError::eth_rpc(e));
         Ok(())
     }
 
     /// Executes a statement prepared and registered earlier by a call to `prepare`.
-    pub async fn execute_prepared(&self, key: &str, param: Value) -> Result<(), CassError> {
-        //Resp: RpcReturn,
+    pub async fn execute_prepared(&self, key: &str, param: Value) -> Result<(), ContextError> {
         /*
         let statement = self
             .statements
@@ -353,7 +339,7 @@ impl Context {
         */
         let start_time = self.stats.try_lock().unwrap().start_request();
         //TODO: this error occurs because the rest of this is not generic yet.
-        let rs: Result<(BlockNumberOrTag, bool), RpcError<TransportErrorKind>> = self
+        let rs: Result<Box<RawValue>, RpcError<TransportErrorKind>> = self
             .session
             .request(
                 "eth_getBlockByNumber",
@@ -361,15 +347,14 @@ impl Context {
             )
             .await;
         let duration = Instant::now() - start_time;
-        /*
         self.stats
             .try_lock()
             .unwrap()
-            .complete_request(duration, &rs);
-        */
-        rs.map_err(|e| CassError::eth_rpc(e));
+            .complete_request::<Params, Box<serde_json::value::RawValue>, TransportErrorKind>(duration, &rs);
+        rs.map_err(|e| ContextError::eth_rpc(e));
         Ok(())
     }
+    */
 
     /// Returns the current accumulated request stats snapshot and resets the stats.
     pub fn take_session_stats(&self) -> SessionStats {
@@ -385,14 +370,15 @@ impl Context {
     }
 }
 
+/*
 /// Functions for binding rune values to CQL parameters
 mod bind {
-    use crate::CassErrorKind;
+    use crate::ContextErrorKind;
     use scylla::frame::response::result::CqlValue;
 
     use super::*;
 
-    fn to_scylla_value(v: &Value) -> Result<CqlValue, CassError> {
+    fn to_scylla_value(v: &Value) -> Result<CqlValue, ContextError> {
         match v {
             Value::Bool(v) => Ok(CqlValue::Boolean(*v)),
             Value::Byte(v) => Ok(CqlValue::TinyInt(*v as i8)),
@@ -459,12 +445,12 @@ mod bind {
                     let int8: &Int8 = obj.downcast_borrow_ref().unwrap();
                     Ok(CqlValue::TinyInt(int8.0))
                 } else {
-                    Err(CassError(CassErrorKind::UnsupportedType(
+                    Err(ContextError(ContextErrorKind::UnsupportedType(
                         v.type_info().unwrap(),
                     )))
                 }
             }
-            other => Err(CassError(CassErrorKind::UnsupportedType(
+            other => Err(ContextError(ContextErrorKind::UnsupportedType(
                 other.type_info().unwrap(),
             ))),
         }
@@ -472,7 +458,7 @@ mod bind {
 
     /// Binds parameters passed as a single rune value to the arguments of the statement.
     /// The `params` value can be a tuple, a vector, a struct or an object.
-    pub fn to_scylla_query_params(params: &Value) -> Result<Vec<CqlValue>, CassError> {
+    pub fn to_scylla_query_params(params: &Value) -> Result<Vec<CqlValue>, ContextError> {
         let mut values = Vec::new();
         match params {
             Value::Tuple(tuple) => {
@@ -488,7 +474,7 @@ mod bind {
                 }
             }
             other => {
-                return Err(CassError(CassErrorKind::UnsupportedType(
+                return Err(ContextError(ContextErrorKind::UnsupportedType(
                     other.type_info().unwrap(),
                 )));
             }
@@ -496,7 +482,9 @@ mod bind {
         Ok(values)
     }
 }
+*/
 
+/*
 #[derive(RustEmbed)]
 #[folder = "resources/"]
 struct Resources;
@@ -678,3 +666,4 @@ pub fn read_resource_lines(path: &str) -> io::Result<Vec<String>> {
         .map(|s| s.to_string())
         .collect_vec())
 }
+*/

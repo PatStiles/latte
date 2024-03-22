@@ -8,6 +8,7 @@ use std::time::Instant;
 use alloy_json_rpc::Request;
 use alloy_json_rpc::RpcError;
 use alloy_rpc_client::RpcCall;
+use alloy_rpc_types::pubsub::Params;
 use alloy_transport::TransportErrorKind;
 use hdrhistogram::Histogram;
 use rune::runtime::{AnyObj, Args, RuntimeContext, Shared, VmError};
@@ -17,7 +18,7 @@ use serde_json::value::RawValue;
 use try_lock::TryLock;
 
 use crate::error::FloodError;
-use crate::{context, CassError, CassErrorKind, Context, SessionStats};
+use crate::{context, Context, SessionStats};
 
 /// Wraps a reference to Session that can be converted to a Rune `Value`
 /// and passed as one of `Args` arguments to a function.
@@ -89,6 +90,7 @@ pub const PREPARE_FN: &str = "prepare";
 pub const ERASE_FN: &str = "erase";
 pub const LOAD_FN: &str = "load";
 
+/*
 /// Compiled workload program
 #[derive(Clone)]
 pub struct Program {
@@ -361,6 +363,7 @@ impl Program {
         Ok(())
     }
 }
+*/
 
 /// Tracks statistics of the Rune function invoked by the workload
 #[derive(Clone, Debug)]
@@ -411,23 +414,23 @@ impl Default for WorkloadState {
 }
 
 pub struct Workload {
-    context: Context, // Need to expose client... we want to bypass rune...
-    program: Program,
+    context: Context,
+    //program: Program,
     function: FnRef,
     state: TryLock<WorkloadState>,
-    cli: Option<Request<Box<RawValue>>>,
+    cli: Request<Box<RawValue>>,
 }
 
 impl Workload {
     pub fn new(
         context: Context,
-        program: Program,
+        //program: Program,
         function: FnRef,
-        cli: Option<Request<Box<RawValue>>>,
+        cli: Request<Box<RawValue>>,
     ) -> Workload {
         Workload {
             context,
-            program,
+            //program,
             function,
             state: TryLock::new(WorkloadState::default()),
             cli,
@@ -438,25 +441,23 @@ impl Workload {
         Ok(Workload {
             context: self.context.clone()?,
             // make a deep copy to avoid congestion on Arc ref counts used heavily by Rune
-            program: self.program.unshare(),
+            //program: self.program.unshare(),
             function: self.function.clone(),
             state: TryLock::new(WorkloadState::default()),
             cli: self.cli.clone(),
         })
     }
 
+    // NOTE: This is not idempotent but eliminates as many abstractions while allowing for bypassing all the Rune scripting logic
     /// Executes a single cycle of a workload.
     /// This should be idempotent –
-    // NOTE: as is not idempotent but this eliminates as many abstractions while allowing for bypassing all the Rune madness
     /// the generated action should be a function of the iteration number.
     /// Returns the cycle number and the end time of the query.
     pub async fn run(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
-        match self.cli {
-            Some(_) => self.run_cli(cycle).await,
-            None => self.run_rune(cycle).await,
-        }
+        self.run_cli(cycle).await
     }
 
+    /*
     pub async fn run_rune(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
         let start_time = Instant::now();
         let context = SessionRef::new(&self.context);
@@ -478,19 +479,25 @@ impl Workload {
             Err(e) => Err(e),
         }
     }
+    */
 
+    //TODO: Link SessionStats with this to have comprehensive stats
     pub async fn run_cli(&self, cycle: u64) -> Result<(u64, Instant), FloodError> {
-        let start_time = Instant::now();
-        let result: Result<(), RpcError<TransportErrorKind>> = RpcCall::new(
-            self.cli.clone().unwrap(),
+        //let start_time = Instant::now();
+        let start_time = self.context.stats.try_lock().unwrap().start_request();
+        // Trying to deserialize to () that is why is errors
+        let rs: Result<Box<RawValue>, RpcError<TransportErrorKind>> = RpcCall::new(
+            self.cli.clone(),
             self.context.session.transport().clone(),
         )
         .boxed()
         .await;
         let end_time = Instant::now();
+        //TAKE SESSION STATS as we don't make a Rune function call
+        self.context.stats.try_lock().unwrap().complete_request::<Params, Box<serde_json::value::RawValue>, TransportErrorKind>(end_time - start_time, &rs);
         let mut state = self.state.try_lock().unwrap();
         state.fn_stats.operation_completed(end_time - start_time);
-        match result {
+        match rs {
             Ok(_) => Ok((cycle, end_time)),
             //TODO: all but eth call have "deserialization error: invalid type: boolean `false`, expected unit at line 1 column 5"
             Err(e) => Ok((cycle, end_time)),

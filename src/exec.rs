@@ -175,6 +175,7 @@ pub async fn par_execute(
 ) -> Result<BenchmarkStats> {
     let thread_count = exec_options.threads.get();
     let concurrency = exec_options.concurrency;
+    //TODO change to list of rates
     let rate = exec_options.rate;
     let progress = match exec_options.duration {
         Interval::Count(count) => Progress::with_count(name.to_string(), count),
