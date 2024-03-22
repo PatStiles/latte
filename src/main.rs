@@ -62,12 +62,12 @@ fn load_report_or_abort(path: &Path) -> Report {
 
 /// Connects to the eth node and returns the session
 async fn connect(url: &Option<String>) -> Result<(Context, Option<NodeInfo>)> {
-    //TODO:
     let url = if url.is_none() {
-        match std::env::var("HTTP_PROVIDER_URL").map_err(FloodError::EnvVar) {
-            Ok(url) => url,
-            Err(_) => "http://127.0.0.1:8545".to_string(),
-        }
+        match std::env::var("HTTP_PROVIDER_URL")
+            .map_err(FloodError::EnvVar) {
+                Ok(url) => url,
+                Err(_) => "http://127.0.0.1:8545".to_string()
+            }
     } else {
         url.clone().unwrap()
     };
