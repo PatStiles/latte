@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::{fs::File, process::exit};
+use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -67,41 +68,76 @@ impl FromStr for Interval {
     }
 }
 
+fn parse_range(input: &str) -> Result<Vec<String>, &'static str> {
+    let parts: Vec<&str> = input.split("..").collect();
+
+    if parts.len() != 2 {
+        return Err("Invalid range format. Use START..END or START..=END");
+    }
+
+    let inclusive = parts[1].starts_with('=');
+    let start = i32::from_str_radix(parts[0].trim_start_matches("0x"), 16).unwrap();
+    let end = if inclusive {
+        i32::from_str_radix(&parts[1].trim_start_matches("=0x"), 16).unwrap()
+    } else {
+        i32::from_str_radix(parts[1].trim_start_matches("0x"), 16).unwrap()
+    };
+
+    if start > end {
+        return Err("Start value cannot be greater than end value");
+    }
+
+    let range: Vec<String> = if inclusive {
+        (start..=end).map(|x| format!("0x{:02x}", x)).collect()
+    } else {
+        (start..end).map(|x| format!("0x{:02x}", x)).collect()
+    };
+
+    Ok(range)
+}
+
+fn parse_params(s: &str) -> Result<Vec<String>, String> {
+    Ok(s.split(' ').map(|s| s.to_string()).collect())
+}
+
 // Taken from cast cli: https://github.com/foundry-rs/foundry/blob/master/crates/cast/bin/cmd/rpc.rs
 /// CLI arguments for `cast rpc`.
-#[derive(Parser, Debug, Serialize, Deserialize)]
+#[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 pub struct RpcCommand {
     /// RPC method name
-    method: String,
+    #[arg(required_unless_present = "input")]
+    method: Option<String>,
 
     /// RPC parameters
     ///
     /// Interpreted as JSON:
     ///
-    /// cast rpc eth_getBlockByNumber 0x123 false
+    /// flood rpc eth_getBlockByNumber 0x123 false
     /// => {"method": "eth_getBlockByNumber", "params": ["0x123", false] ... }
-    params: Vec<String>,
+    ///
+    /// flood rpc eth_getBlockByNumber 0x123 false
+    #[arg(
+        required_unless_present = "input",
+        value_parser(parse_params),
+        value_delimiter = ','
+    )]
+    pub params: Option<Vec<Vec<String>>>,
 
     /// Send raw JSON parameters
     ///
     /// The first param will be interpreted as a raw JSON array of params.
     /// If no params are given, stdin will be used. For example:
     ///
-    /// cast rpc eth_getBlockByNumber '["0x123", false]' --raw
+    /// flood run eth_getBlockByNumber '["0x123", false]' --raw
     ///     => {"method": "eth_getBlockByNumber", "params": ["0x123", false] ... }
-    #[clap(long, short = 'a')]
+    #[clap(long, short = 'j')]
     raw: bool,
 
-    //NOTE: can import these from foundry to package connection nicely
-    /*
-    #[command(flatten)]
-    rpc: RpcOpts,
-    */
     // RUN COMMANDS
     /// Number of cycles per second to execute.
     /// If not given, the benchmark cycles will be executed as fast as possible.
-    #[clap(short('r'), long, value_name = "COUNT")]
-    pub rate: Option<f64>,
+    #[clap(short('r'), long, value_name = "COUNT", num_args(0..))]
+    pub rate: Option<Vec<f64>>,
 
     /// Number of cycles or duration of the warmup phase.
     #[clap(
@@ -142,6 +178,11 @@ pub struct RpcCommand {
     #[clap(long("tag"), number_of_values = 1)]
     pub tags: Vec<String>,
 
+    /// Path to JSON input file with JSON-RPC calls
+    #[clap(short('i'), long)]
+    #[serde(skip)]
+    pub input: Option<PathBuf>,
+
     /// Path to an output file or directory where the JSON report should be written to.
     #[clap(short('o'), long)]
     #[serde(skip)]
@@ -155,13 +196,27 @@ pub struct RpcCommand {
     #[clap(short, long)]
     pub quiet: bool,
 
-    // Cassandra connection settings.
-    #[clap(short('u'), long)]
-    pub rpc_url: Option<String>,
+    /// Randomize the execution order of specified calls between workload calls
+    #[clap(long)]
+    pub random: bool,
+
+    /// Randomly select and execute a single call from a list of calls
+    #[clap(long)]
+    pub choose: bool,
+
+    /// Eth Node RPC-URL
+    #[clap(short('u'), default_value = "localhost", long, num_args(0..))]
+    pub rpc_url: Vec<String>,
+
+    #[clap(short('e'), long)]
+    pub exp_ramp: bool,
 
     /// Seconds since 1970-01-01T00:00:00Z
     #[clap(hide = true, long)]
     pub timestamp: Option<i64>,
+
+    #[clap(skip)]
+    pub num_req: Option<usize>,
 
     #[clap(skip)]
     pub cluster_name: Option<String>,
@@ -170,15 +225,14 @@ pub struct RpcCommand {
     pub chain_id: Option<String>,
 }
 
-impl RpcCommand {
-    pub fn parse_params(&self) -> Result<(String, Value), anyhow::Error> {
-        let RpcCommand {
-            raw,
-            method,
-            params,
-            ..
-        } = self;
+#[derive(Debug, Deserialize, Serialize)]
+struct JsonRequest {
+    method: String,
+    params: serde_json::Value,
+}
 
+impl RpcCommand {
+    fn parse_rpc_params(params: &Vec<String>, raw: &bool) -> Result<Value, anyhow::Error> {
         let params = if *raw {
             if params.is_empty() {
                 serde_json::Deserializer::from_reader(std::io::stdin())
@@ -187,18 +241,113 @@ impl RpcCommand {
                     .transpose()?
                     .ok_or_else(|| anyhow!("Empty JSON parameters"))?
             } else {
-                value_or_string(params.iter().join(" "))
+                Self::value_or_string(&params.iter().join(" "))
             }
         } else {
-            //TODO: remove this clone
             serde_json::Value::Array(
                 params
                     .iter()
-                    .map(|value: &String| value_or_string(value.clone()))
+                    .map(|value: &String| Self::value_or_string(&value))
                     .collect(),
             )
         };
-        Ok((method.to_string(), params))
+        Ok(params)
+    }
+
+    fn value_or_string(value: &String) -> Value {
+        serde_json::from_str(value).unwrap_or(serde_json::Value::String(value.to_string()))
+    }
+
+    fn parse_file(path: &PathBuf) -> Vec<(String, Value)> {
+        // Check if the specified file exists and is a .json file
+        if let Some(extension) = path.extension() {
+            if extension != "json" {
+                eprintln!("Error: File is not a .json file");
+                std::process::exit(1);
+            }
+        } else {
+            eprintln!("Error: File does not have an extension");
+            std::process::exit(1);
+        }
+
+        // Read the contents of the file
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(_) => {
+                eprintln!("Error: Failed to open the file");
+                std::process::exit(1);
+            }
+        };
+
+        let mut contents = String::new();
+
+        if let Err(_) = file.read_to_string(&mut contents) {
+            eprintln!("Error: Failed to read the file");
+            std::process::exit(1);
+        }
+
+        // Parse JSON-RPC requests
+        let json_requests: Vec<JsonRequest> = match serde_json::from_str(&contents) {
+            Ok(json_requests) => json_requests,
+            Err(_) => {
+                eprintln!("Error: Failed to parse JSON");
+                std::process::exit(1);
+            }
+        };
+
+        // Extract method and params from each request
+        let parsed_requests: Vec<(String, serde_json::Value)> = json_requests
+            .iter()
+            .map(|req| (req.method.clone(), req.params.clone()))
+            .collect();
+
+        parsed_requests
+    }
+
+    pub fn parse_params(&self) -> Result<Vec<(String, Value)>, anyhow::Error> {
+        let RpcCommand {
+            raw,
+            method,
+            params,
+            input,
+            ..
+        } = self;
+
+        let requests = match input {
+            Some(path) => Self::parse_file(path),
+            None => {
+                let params = params.as_ref().unwrap();
+                let method = method.as_ref().unwrap();
+                let mut has_range = false;
+                let params = params.iter().fold(Vec::new(), |mut acc, param| {
+                    for (j, token) in param.iter().enumerate() {
+                        if token.contains("..") {
+                            if has_range { eprintln!("Error: Invalid Number of Ranges Specified Removing extra Ranged Param -> Only one range can be specified per parameters list"); exit(1); };
+                            has_range = true;
+                            let range = parse_range(token).unwrap();
+                            for val in range {
+                                let mut new_param = param.clone();
+                                new_param[j] = val.clone();
+                                acc.push(new_param);
+                            }
+                        }
+                    }
+                    if has_range {
+                        acc
+                    } else {
+                        acc.push(param.clone());
+                        acc
+                    }
+                });
+                let reqs: Vec<(String, Value)> = params
+                    .iter()
+                    .map(|param| (method.clone(), Self::parse_rpc_params(&param, raw).unwrap()))
+                    .collect();
+                reqs
+            }
+        };
+
+        Ok(requests)
     }
 
     pub fn set_timestamp_if_empty(mut self) -> Self {
@@ -208,9 +357,56 @@ impl RpcCommand {
         self
     }
 
+    pub fn set_num_req(mut self, num_req: usize) -> Self {
+        if self.num_req.is_none() {
+            if self.choose {
+                //Choose mode grabs 1 req
+                self.num_req = Some(1)
+            } else {
+                self.num_req = Some(num_req)
+            }
+        }
+        self
+    }
+
+    pub fn set_rates(mut self, rates: Option<Vec<f64>>) -> Self {
+        self.rate = rates;
+        self
+    }
+
+    fn exp_ramp(num_req: usize) -> Vec<f64> {
+        let num_values = 6;
+        let mut log_rates = Vec::with_capacity(num_values);
+        let start_rate = (10 / num_req) as f64;
+        let mut rate = start_rate;
+        while log_rates.len() < log_rates.capacity() {
+            log_rates.push(rate);
+            rate *= 10.0;
+        }
+        log_rates
+    }
+
+    /// Parses rate for run
+    pub fn parse_rate(&self) -> Option<Vec<f64>> {
+        let num_req = self.num_req.unwrap();
+        if self.exp_ramp {
+            return Some(Self::exp_ramp(num_req));
+        }
+        // If not set return None
+        if let Some(rate) = &self.rate {
+            Some(rate.into_iter().map(|r| r / num_req as f64).collect())
+        } else {
+            None
+        }
+    }
+
     /// Returns benchmark name
     pub fn name(&self) -> String {
-        self.method.clone()
+        //TODO: address this mess
+        self.method
+            .as_ref()
+            .unwrap_or(&"default".to_string())
+            .clone()
     }
 
     /// Suggested file name where to save the results of the run.
@@ -219,16 +415,12 @@ impl RpcCommand {
         components.extend(self.cluster_name.iter().map(|x| x.replace(' ', "_")));
         components.extend(self.chain_id.iter().cloned());
         components.extend(self.tags.iter().cloned());
-        components.extend(self.rate.map(|r| format!("r{r}")));
+        //components.extend(self.rate.map(|r| format!("r{r}")));
         components.push(format!("p{}", self.concurrency));
         components.push(format!("t{}", self.threads));
         components.push(chrono::Local::now().format("%Y%m%d.%H%M%S").to_string());
         PathBuf::from(format!("{}.{extension}", components.join(".")))
     }
-}
-
-fn value_or_string(value: String) -> Value {
-    serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value))
 }
 
 #[derive(Parser, Debug)]
@@ -271,6 +463,10 @@ pub struct PlotCommand {
     #[clap(short, long("throughput"))]
     pub throughput: bool,
 
+    /// Plot success_rate.
+    #[clap(short, long("success_rate"))]
+    pub success_rate: bool,
+
     /// Write output to the given file.
     #[clap(short('o'), long, value_name = "PATH")]
     pub output: Option<PathBuf>,
@@ -298,7 +494,7 @@ pub enum Command {
     ///
     /// Prints nicely formatted statistics to the standard output.
     /// Additionally dumps all data into a JSON report file.
-    Rpc(RpcCommand),
+    Run(RpcCommand),
 }
 
 #[derive(Parser, Debug)]
@@ -310,48 +506,4 @@ version = clap::crate_version ! (),
 pub struct AppConfig {
     #[clap(subcommand)]
     pub command: Command,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct SchemaConfig {
-    #[serde(default)]
-    pub script: Vec<String>,
-    #[serde(default)]
-    pub cql: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoadConfig {
-    pub count: u64,
-    #[serde(default)]
-    pub script: Vec<String>,
-    #[serde(default)]
-    pub cql: String,
-}
-
-mod defaults {
-    pub fn ratio() -> f64 {
-        1.0
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RunConfig {
-    #[serde(default = "defaults::ratio")]
-    pub ratio: f64,
-    #[serde(default)]
-    pub script: Vec<String>,
-    #[serde(default)]
-    pub cql: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct WorkloadConfig {
-    #[serde(default)]
-    pub schema: SchemaConfig,
-    #[serde(default)]
-    pub load: HashMap<String, LoadConfig>,
-    pub run: HashMap<String, RunConfig>,
-    #[serde(default)]
-    pub bindings: HashMap<String, String>,
 }

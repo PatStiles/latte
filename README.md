@@ -1,283 +1,132 @@
-# Lightweight Benchmarking Tool for Apache Cassandra
+# Flood Rust:
+`Flood Rust` is a Rust rewrite of Flood based on [Latte](https://github.com/pkolaczk/latte) a performance benchmarking tool for CassandraDB. Currently, `flood_rust` can benchmark RPC node performance of individual JSON-RPC requests and series of JSON-RPC requests across a variety of parameters inputed manually or from an input file. For each benchmark, `flood_rust` defines a `Workload` which may contain one or more JSON-RPC requests and repeatedly executes cycles of the workload. The user may define the `--rate  [req/s]`. The execution time of a `Workload` cycle are recorded as well as the timing and success of individual JSON-RPC calls are recorded.
 
-**Runs custom CQL workloads against a Cassandra cluster and measures throughput and response times**
+If one requests is specified then one requests is executed per benchmark cycle. If multiple are specified either via multiple requests with different methods or by the same requests with different parameters all requests are executed in order sequentially within a single benchmark cycle. Each requests is individually timed and the time to executed a total workload cycle (one or multiple requests) is recorded.
+ 
+## Commands
+- `run <METHOD> [<PARAMS>..]`
 
-![animation](img/latte.gif)
+    ![animation](img/flood_run.gif)
+    - Flags:
+        - `--raw`: Send raw JSON parameters, The first param will be interpreted as a raw JSON array of params.
+        - For Example: `flood run eth_getBlockByNumber '["0x123", false]' --raw => {"method": "eth_getBlockByNumber", "params": ["0x123", false] ... }`
+        - `--rate [<RATE>..]`: Rate or req/s to send per second.
+        - `--warmup_duration <NUM_CYCLES>`: Duration of the warmup phase in number of workload cycles.
+        - `--run_duration <SECONDS>`: Duration of main benchmark phase in seconds.
+        - `--threads <NUM_THREADS>`: Number of worker threads used by the driver.
+        - `--concurrency <NUM_CONCURRENCY> `: Max number of concurrent async requests (workloads) per thread during the main benchmark phase.
+        - `--sampling_interval <PERIOD>`: Throughput sampling period, in seconds.
+        - `--tags <TAG>`: Label that will be added to the report to help identifying the test.
+        - `--input <FILE_PATH>`: Path to JSON input falls with listed JSON-RPC calls.
+        - `--output <FILE_PATH>`: Path to an output file or directory where the JSON report should be written to.
+        - `--baseline <REPORT_PATH>`: Path to a report from another earlier run that should be compared to side-by-side.
+        - `--quiet`: Don't display the progress bar.
+        - `--random`: On each workload cycle execution randomly suffle and execute all provided JSON-RPC requests.
+        - `--choose`: On each workload cycle randomly choose on of the provided JSON-RPC requests to execute, this differs from `--random` as only one requests from the provided list.
+        - `--rpc-url [<RPC_URL>..]`: Rpc url of ethereume node.
+        - `--exp-ramp`: Utility function to benchmark rates of powers of ten ([10, 100, ..., 1000000] req/s).
+        - `--timestamp`: Seconds since 1970-01-01T00:00:00Z
+- `show <JSON_PATH>`: Display results of a benchmark run in cli
 
-## Why Yet Another Benchmarking Program?
+    ![animation](img/flood_show.gif)
+    - Flags:
+        - `--baseline <JSON_PATH>`: Relative Path to <REPORT>.json file to compare against as baseline
+- `hdr <JSON_PATH>`: Export histograms as a compressed HDR interval log for use with HdrHistogram (https://github.com/HdrHistogram/HdrHistogram).
+    - Flags:
+        - `--output <FILE_PATH>`: Path to an output file  where the plot the hdr log should be written to. 
+        - `--tag <TAG>`: tag prefix for each histogram
+- `plot [<JSON_PATH>..]`: Plots the data from reports at sampling intervals as an `.svg` image in the local directory
+    - Flags
+        - `--throughput`: Throughput [req/s] vs Time [s]
+        - `--precentile: <PERCENTILE>`: Response Time [ms] vs Time [s] for a provided Response Time percentile.
+            - `PERCENTILES`: input_values = {MIN, 25,, 50, 75, 90, 95, 99, 99.9, 99,99, MAX}
+        - `--success_rate`: Request Success Rate [%] vs Time [s]
+        - `--success_rate --throughput`: Request Success Rate [%] vs Throughput [req/s]
+        - `--output <FILE_PATH>`: Path to an output file or directory where the plot `.svg` should be written to.
 
-- Latte outperforms other benchmarking tools for Apache Cassandra by a wide margin. See [benchmarks](BENCHMARKS.md).
-- Latte aims to offer the most flexible way of defining workloads.
 
-### Performance
 
-Contrary to 
-[NoSQLBench](https://github.com/nosqlbench/nosqlbench), 
-[Cassandra Stress](https://cassandra.apache.org/doc/4.0/cassandra/tools/cassandra_stress.html)
-and [tlp-stress](https://thelastpickle.com/tlp-stress/), 
-Latte has been written in Rust and uses the native Cassandra driver from Scylla. 
-It features a fully asynchronous, thread-per-core execution engine, 
-capable of running thousands of requests per second from a single thread. 
+## Examples:
 
-Latte has the following unique performance characteristics:
-* Great scalability on multi-core machines.
-* About 10x better CPU efficiency than NoSQLBench. 
-  This means you can test large clusters with a small number of clients.  
-* About 50x-100x lower memory footprint than Java-based tools. 
-* Very low impact on operating system resources – low number of syscalls, context switches and page faults.  
-* No client code warmup needed. The client code works with maximum performance from the first benchmark cycle. 
-  Even runs as short as 30 seconds give accurate results.  
-* No GC pauses nor HotSpot recompilation happening in the middle of the test. You want to measure hiccups of the server,
-  not the benchmarking tool.
+[JSON-RPC Reference](https://ethereum.org/en/developers/docs/apis/json-rpc)
 
-The excellent performance makes it a perfect tool for exploratory benchmarking, when you quickly want to experiment with
-different workloads.
+#### Single JSON-RPC
+```bash
+cargo b --bins
 
-### Flexibility
-
-Other benchmarking tools often use configuration files to specify workload recipes. 
-Although that makes it easy to define simple workloads, it quickly becomes cumbersome when you want 
-to script more realistic scenarios that issue multiple
-queries or need to generate data in different ways than the ones directly built into the tool.
-
-Instead of trying to bend a popular configuration file format into a turing-complete scripting language, Latte simply
-embeds a real, fully-featured, turing-complete, modern scripting language. We chose [Rune](https://rune-rs.github.io/)
-due to painless integration with Rust, first-class async support, satisfying performance and great support from its
-maintainers.
-
-Rune offers syntax and features similar to Rust, albeit with dynamic typing and easy automatic memory management. Hence,
-you can not only just issue custom CQL queries, but you can program  
-anything you wish. There are variables, conditional statements, loops, pattern matching, functions, lambdas,
-user-defined data structures, objects, enums, constants, macros and many more.
-
-## Features
-* Compatible with Apache Cassandra 3.x, 4.x, DataStax Enterprise 6.x and ScyllaDB 
-* Custom workloads with a powerful scripting engine
-* Asynchronous queries
-* Prepared queries
-* Programmable data generation
-* Workload parameterization
-* Accurate measurement of throughput and response times with error margins
-* No coordinated omission
-* Configurable number of connections and threads
-* Rate and concurrency limiters
-* Progress bars
-* Beautiful text reports
-* Can dump report in JSON
-* Side-by-side comparison of two runs
-* Statistical significance analysis of differences corrected for auto-correlation
-
-## Limitations
-
-Latte is still early stage software under intensive development.
-
-* Binding some CQL data types is not yet supported, e.g. user defined types, maps or integer types smaller than 64-bit.
-* Query result sets are not exposed yet.
-* The set of data generating functions is tiny and will be extended soon.
-* Backwards compatibility may be broken frequently.
-
-## Installation
-### From deb package
-```shell
-dpkg -i latte-<version>.deb
-````
-
-## From source
-1. [Install Rust toolchain](https://rustup.rs/)
-2. Run `cargo install latte-cli`
-
-## Usage
-Start a Cassandra cluster somewhere (can be a local node). Then run:
-
-```shell
-latte schema <workload.rn> [<node address>] # create the database schema 
-latte load <workload.rn> [<node address>]   # populate the database with data
-latte run <workload.rn> [-f <function>] [<node address>]  # execute the workload and measure the performance 
- ```
-
-You can find a few example workload files in the `workloads` folder.
-For convenience, you can place workload files under `/usr/share/latte/workloads` or `.local/share/latte/workloads`,
-so latte can find them regardless of the current working directory. You can also set up custom workload locations
-by setting `LATTE_WORKLOAD_PATH` environment variable.
-
-Latte produces text reports on stdout but also saves all data to a json file in the working directory. The name of the
-file is created automatically from the parameters of the run and a timestamp.
-
-You can display the results of a previous run with `latte show`:
-
-```shell
-latte show <report.json>
-latte show <report.json> -b <previous report.json>  # to compare against baseline performance
+# Max rate
+target/debug/flood run eth_getBlockByNumber "0x1b4 true" --rpc-url [<RPC_URL>..]
+# 100 req/s
+target/debug/flood run eth_getBlockByNumber "0x1b4 true" --rpc-url [<RPC_URL>..] --rate 100
+# Perform multiple benchmarsk for 100 req/s, 10 req/s, 1000 req/s
+target/debug/flood run eth_getStorageAt "0x295a70b2de5e3953354a6a8344e616ed314d7251 0x0 latest" --rpc-url [<RPC_URL>..] --rate 100 10 1000
 ```
 
-Run `latte --help` to display help with the available options.
+#### Single JSON-RPC with expoential ramp up -> Generates a list of rates powers of 10.
+```bash
+cargo b --bins
 
-## Workloads
-
-Workloads for Latte are fully customizable with embedded scripting language [Rune](https://rune-rs.github.io/).
-
-A workload script defines a set of public functions that Latte calls automatically. A minimum viable workload script
-must define at least a single public async function `run` with two arguments:
-
-- `ctx` – session context that provides the access to Cassandra
-- `i` – current unique cycle number of a 64-bit integer type, starting at 0
-
-The following script would benchmark querying the `system.local` table:
-
-```rust
-pub async fn run(ctx, i) {
-  ctx.execute("SELECT cluster_name FROM system.local LIMIT 1").await
-}
-```
-Instance functions on `ctx` are asynchronous, so you should call `await` on them.
-
-The workload script can provide more than one function for running the benchmark.
-In this case you can name those functions whatever you like, and then select one of them
-with `-f` / `--function` parameter.
-
-### Schema creation
-
-You can (re)create your own keyspaces and tables needed by the benchmark in the `schema` function.
-The `schema` function should also drop the old schema if present.
-The `schema` function is executed by running `latte schema` command.
-
-```rust
-pub async fn schema(ctx) {
-  ctx.execute("CREATE KEYSPACE IF NOT EXISTS test \
-                 WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 }").await?;
-  ctx.execute("DROP TABLE IF NOT EXISTS test.test").await?;
-  ctx.execute("CREATE TABLE test.test(id bigint, data varchar)").await?;
-}
+target/debug/flood run eth_getBlockByNumber "0x1b4 true" --rpc-url [<RPC_URL>..] --exp-ramp
+target/debug/flood run eth_getStorageAt "0x295a70b2de5e3953354a6a8344e616ed314d7251 0x0 latest" --rpc-url [<RPC_URL>..] --exp-ramp
 ```
 
-### Prepared statements
+#### Multiple JSON-RPC requests with different parameters executed serially
+```bash
+cargo b --bins
 
-Calling `ctx.execute` is not optimal, because it doesn't use prepared statements. You can prepare statements and
-register them on the context object in the `prepare`
-function:
-
-```rust
-const INSERT = "my_insert";
-const SELECT = "my_select";
-
-pub async fn prepare(ctx) {
-  ctx.prepare(INSERT, "INSERT INTO test.test(id, data) VALUES (?, ?)").await?;
-  ctx.prepare(SELECT, "SELECT * FROM test.test WHERE id = ?").await?;
-}
-
-pub async fn run(ctx, i) {
-  ctx.execute_prepared(SELECT, [i]).await
-}
+target/debug/flood run eth_getBlockByNumber "0x1b4 true","0x242 true" --rpc-url [<RPC_URL>..] --rate 100
 ```
 
-### Populating the database
+#### Multiple JSON-RPC requests executed in random order on each workload cycle
+```bash
+cargo b --bins
 
-Read queries are more interesting when they return non-empty result sets. 
-
-To be able to load data into tables with `latte load`, you need to set the number of load cycles on the context object 
-and define the `load` function:
-
-```rust
-pub async fn prepare(ctx) {
-  ctx.load_cycle_count = 1000000;
-}
-
-pub async fn load(ctx, i) {
-  ctx.execute_prepared(INSERT, [i, "Lorem ipsum dolor sit amet"]).await
-}
+target/debug/flood run eth_getBlockByNumber "0x1b4 true","0x242 true" --rpc-url [<RPC_URL>..] --rate 100 --random
 ```
 
-We also recommend defining the `erase` function to erase the data before loading so that you always get the same
-dataset regardless of the data that were present in the database before:
+#### Select and execute a single random requests per cycle from a list of multiple requests
+```bash
+cargo b --bins
 
-```rust
-pub async fn erase(ctx) {
-  ctx.execute("TRUNCATE TABLE test.test").await
-}
+target/debug/flood run eth_getBlockByNumber "0x1b4 true","0x242 true" --rpc-url [<RPC_URL>..] --rate 100 --choose
 ```
 
-### Generating data
+#### Multiple JSON-RPC requests over a range of parameters (Supports ranges for a single parameter within a list, multiple ranged parameters not allowed)
+```bash
+cargo b --bins
 
-Latte comes with a library of data generating functions. They are accessible in the `latte` crate. Typically, those
-functions accept an integer `i` cycle number, so you can generate consistent numbers. The data generating functions
-are pure, i.e. invoking them multiple times with the same parameters yields always the same results.
-
-- `latte::uuid(i)` – generates a random (type 4) UUID
-- `latte::hash(i)` – generates a non-negative integer hash value
-- `latte::hash2(a, b)` – generates a non-negative integer hash value of two integers
-- `latte::hash_range(i, max)` – generates an integer value in range `0..max`
-- `latte::hash_select(i, vector)` – selects an item from a vector based on a hash
-- `latte::blob(i, len)` – generates a random binary blob of length `len`
-- `latte::normal(i, mean, std_dev)` – generates a floating point number from a normal distribution
-
-#### Numeric conversions
-
-Rune represents integers as 64-bit signed values. Therefore, it is possible to directly pass a Rune integer to
-a Cassandra column of type `bigint`. However, binding a 64-bit value to smaller integer column types, like
-`int`, `smallint` or `tinyint` will result in a runtime error. As long as an integer value does not exceed the bounds,
-you can convert it to smaller signed  integer types by using the following instance functions:
-
-- `x.to_i32()` – converts a float or integer to a 32-bit signed integer, compatible with Cassandra `int` type
-- `x.to_i16()` – converts a float or integer to a 16-bit signed integer, compatible with Cassandra `smallint` type
-- `x.to_i8()` – converts a float or integer to an 8-bit signed integer, compatible with Cassandra `tinyint` type
-- `x.clamp(min, max)` – restricts the range of an integer or a float value to given range  
-
-You can also convert between floats and integers by calling `to_integer` or `to_float` instance functions.
-
-#### Text resources
-
-Text data can be loaded from files or resources with functions in the `fs` module:
-- `fs::read_to_string(file_path)` – returns file contents as a string
-- `fs::read_lines(file_path)` – reads file lines into a vector of strings
-- `fs::read_resource_to_string(resource_name)` – returns builtin resource contents as a string
-- `fs::read_resource_lines(resource_name)` – returns builtin resource lines as a vector of strings
-
-The resources are embedded in the program binary. You can find them under `resources` folder in the 
-source tree. 
-
-To reduce the cost of memory allocation, it is best to load resources in the `prepare` function only once 
-and store them in the `data` field of the context for future use in `load` and `run`: 
-
-```rust
-pub async fn prepare(ctx) {
-  ctx.data.last_names = fs::read_lines("lastnames.txt")?;
-  // ... prepare queries
-}
-
-pub async fn run(ctx, i) {
-  let random_last_name = latte::hash_select(i, ctx.data.last_names);
-  // ... use random_last_name in queries
-}
+target/debug/flood run eth_getBlockByNumber "0x1b4..0x1bb true","0x242..0x24b true" --rpc-url [<RPC_URL>..] --rate 100
 ```
 
-### Parameterizing workloads
-
-Workloads can be parameterized by parameters given from the command line invocation.
-Use `latte::param!(param_name, default_value)` macro to initialize script constants from command line parameters:
-
-```rust
-const ROW_COUNT = latte::param!("row_count", 1000000);
-
-pub async fn prepare(ctx) {
-  ctx.load_cycle_count = ROW_COUNT;
-} 
+#### Multiple JSON-RPC requests from file
+```bash
+cargo b --bins
+target/debug/flood run --input examples/eth_getBlockByNumber.json --rpc-url [<RPC_URL>..] --rate 100
+target/debug/flood run --input examples/eth_getStorageAt.json --rpc-url [<RPC_URL>..] --rate 100
 ```
 
-Then you can set the parameter by using `-P`:
+#### Benchmark with comparison to baseline
+```bash
+target/debug/flood run eth_getBlockByNumber "0x1b4 true" --rpc-url [<RPC_URL>..] -b <REPORT_JSON_PATH>
 ```
-latte run <workload> -P row_count=200
+
+#### Compare two benchmarks
+```bash
+target/debug/flood show -b [<REPORT_JSON_PATH>..]
 ```
 
-### Error handling
+#### Plot Results
+```bash
+# Plot Throughput [req/s] vs Time
+target/debug/flood plot --throughput-b [<REPORT_JSON_PATH>..]
+# Plot Response Time for provided Percentile (Min, 25, 50, 75, 90, 95, 98, 99, 99.9, 99.99, MAX) [ms] vs Time
+target/debug/flood plot --percentile <PERCENTILE> -b [<REPORT_JSON_PATH>..]
+# Plot Success Rate [%] vs Time
+target/debug/flood plot --success_rate -b [<REPORT_JSON_PATH>..]
+# Plot Success Rate [%] vs Throughput [req/s]
+target/debug/flood plot --success_rate --throughput -b [<REPORT_JSON_PATH>..]
+```
 
-Errors during execution of a workload script are divided into three classes:
-
-- compile errors – the errors detected at the load time of the script; e.g. syntax errors or referencing an undefined
-  variable. These are signalled immediately and terminate the benchmark even before connecting to the database.
-- runtime errors / panics – e.g. division by zero or array out of bounds access. They terminate the benchmark
-  immediately.
-- error return values – e.g. when the query execution returns an error result. Those take effect only when actually
-  returned from the function (use `?` for propagating them up the call chain). All errors except Cassandra overload
-  errors terminate  
-  the benchmark immediately. Overload errors (e.g. timeouts) that happen during the main run phase are counted and
-  reported in the benchmark report.
+## Glossary
+- **Workload/Op**: Atomic unit of execution measured by Flood. One or many JSON-RPC requests executed in a continguous timed operation.
+- **Op(s)**: An abbreviated term for Workload.

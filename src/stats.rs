@@ -267,11 +267,9 @@ pub struct Sample {
     pub request_count: u64,
     pub error_count: u64,
     pub errors: HashSet<String>,
-    pub row_count: u64,
     pub mean_queue_len: f32,
     pub cycle_throughput: f32,
     pub req_throughput: f32,
-    pub row_throughput: f32,
     pub mean_cycle_time_ms: f32,
     pub mean_resp_time_ms: f32,
     pub cycle_time_percentiles: [f32; Percentile::COUNT],
@@ -287,7 +285,6 @@ impl Sample {
         let mut cycle_times_ns = Histogram::new(3).unwrap();
 
         let mut request_count = 0;
-        let mut row_count = 0;
         let mut errors = HashSet::new();
         let mut error_count = 0;
         let mut mean_queue_len = 0.0;
@@ -299,9 +296,8 @@ impl Sample {
 
         for s in stats {
             let ss = &s.session_stats;
-            let fs = &s.function_stats;
+            let fs = &s.workload_stats;
             request_count += ss.req_count;
-            row_count += ss.row_count;
             if errors.len() < MAX_KEPT_ERRORS {
                 errors.extend(ss.req_errors.iter().cloned());
             }
@@ -311,9 +307,9 @@ impl Sample {
             resp_times_ns.add(&ss.resp_times_ns).unwrap();
             resp_time_histogram_ns.add(&ss.resp_times_ns).unwrap();
 
-            cycle_count += fs.call_count;
-            cycle_times_ns.add(&fs.call_times_ns).unwrap();
-            cycle_time_histogram_ns.add(&fs.call_times_ns).unwrap();
+            cycle_count += fs.workload_count;
+            cycle_times_ns.add(&fs.workload_times_ns).unwrap();
+            cycle_time_histogram_ns.add(&fs.workload_times_ns).unwrap();
         }
         let resp_time_percentiles = percentiles_ms(&resp_times_ns);
         let call_time_percentiles = percentiles_ms(&cycle_times_ns);
@@ -323,13 +319,11 @@ impl Sample {
             duration_s,
             cycle_count,
             request_count,
-            row_count,
             error_count,
             errors,
             mean_queue_len: not_nan_f32(mean_queue_len).unwrap_or(0.0),
             cycle_throughput: cycle_count as f32 / duration_s,
             req_throughput: request_count as f32 / duration_s,
-            row_throughput: row_count as f32 / duration_s,
             mean_cycle_time_ms: cycle_times_ns.mean() as f32 / 1000000.0,
             cycle_time_histogram_ns: SerializableHistogram(cycle_time_histogram_ns),
             cycle_time_percentiles: call_time_percentiles,
@@ -376,12 +370,6 @@ impl Log {
 
     fn req_throughput(&self) -> Mean {
         let t: Vec<f32> = self.samples.iter().map(|s| s.req_throughput).collect();
-        let w: Vec<f32> = self.samples.iter().map(|s| s.duration_s).collect();
-        Mean::compute(t.as_slice(), w.as_slice())
-    }
-
-    fn row_throughput(&self) -> Mean {
-        let t: Vec<f32> = self.samples.iter().map(|s| s.row_throughput).collect();
         let w: Vec<f32> = self.samples.iter().map(|s| s.duration_s).collect();
         Mean::compute(t.as_slice(), w.as_slice())
     }
@@ -463,12 +451,9 @@ pub struct BenchmarkStats {
     pub errors: Vec<String>,
     pub error_count: u64,
     pub errors_ratio: Option<f64>,
-    pub row_count: u64,
-    pub row_count_per_req: Option<f64>,
     pub cycle_throughput: Mean,
     pub cycle_throughput_ratio: Option<f64>,
     pub req_throughput: Mean,
-    pub row_throughput: Mean,
     pub cycle_time_ms: TimeDistribution,
     pub resp_time_ms: Option<TimeDistribution>,
     pub concurrency: Mean,
@@ -513,12 +498,6 @@ impl BenchmarkCmp<'_> {
     /// Returns None if the second benchmark is unset.
     pub fn cmp_req_throughput(&self) -> Option<Significance> {
         self.cmp(|s| Some(s.req_throughput))
-    }
-
-    /// Checks if row throughput means of two benchmark runs are significantly different.
-    /// Returns None if the second benchmark is unset.
-    pub fn cmp_row_throughput(&self) -> Option<Significance> {
-        self.cmp(|s| Some(s.row_throughput))
     }
 
     // Checks if mean response time of two benchmark runs are significantly different.
@@ -594,13 +573,12 @@ impl Recorder {
                 .add(&s.session_stats.resp_times_ns)
                 .unwrap();
             self.cycle_times_ns
-                .add(&s.function_stats.call_times_ns)
+                .add(&s.workload_stats.workload_times_ns)
                 .unwrap();
         }
         let stats = Sample::new(self.start_instant, samples);
         self.cycle_count += stats.cycle_count;
         self.request_count += stats.request_count;
-        self.row_count += stats.row_count;
         if self.errors.len() < MAX_KEPT_ERRORS {
             self.errors.extend(stats.errors.iter().cloned());
         }
@@ -630,7 +608,6 @@ impl Recorder {
         let cycle_throughput = self.log.call_throughput();
         let cycle_throughput_ratio = self.rate_limit.map(|r| 100.0 * cycle_throughput.value / r);
         let req_throughput = self.log.req_throughput();
-        let row_throughput = self.log.row_throughput();
         let concurrency = self.log.mean_concurrency();
         let concurrency_ratio = 100.0 * concurrency.value / self.concurrency_limit.get() as f64;
 
@@ -653,12 +630,9 @@ impl Recorder {
             errors_ratio: not_nan(100.0 * self.error_count as f64 / count as f64),
             request_count: self.request_count,
             requests_per_cycle: self.request_count as f64 / self.cycle_count as f64,
-            row_count: self.row_count,
-            row_count_per_req: not_nan(self.row_count as f64 / self.request_count as f64),
             cycle_throughput,
             cycle_throughput_ratio,
             req_throughput,
-            row_throughput,
             cycle_time_ms: TimeDistribution {
                 mean: self.log.cycle_time_ms(),
                 percentiles: cycle_time_percentiles,

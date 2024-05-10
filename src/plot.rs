@@ -1,6 +1,6 @@
 use crate::config::PlotCommand;
 use crate::load_report_or_abort;
-use crate::plot::SeriesKind::{ResponseTime, Throughput};
+use crate::plot::SeriesKind::{ResponseTime, Throughput, SuccessRate, SuccessRateVsThroughput};
 use crate::report::Report;
 use crate::Result;
 use itertools::Itertools;
@@ -17,6 +17,8 @@ use std::process::exit;
 enum SeriesKind {
     ResponseTime,
     Throughput,
+    SuccessRate,
+    SuccessRateVsThroughput
 }
 
 impl SeriesKind {
@@ -24,6 +26,8 @@ impl SeriesKind {
         match self {
             ResponseTime => "response time [ms]",
             Throughput => "throughput [req/s]",
+            SuccessRate => "success rate [%]",
+            SuccessRateVsThroughput => "success rate [%]",
         }
     }
 }
@@ -130,6 +134,8 @@ pub async fn plot_graph(conf: PlotCommand) -> Result<()> {
     let primary_y_spec: YSpec = match scales.as_slice() {
         [ResponseTime] => YSpec::Log((min_value..max_value).log_scale().into()),
         [Throughput] => YSpec::Linear((0f32..max_value).into()),
+        [SuccessRate] => YSpec::Linear((0f32..max_value).into()),
+        [SuccessRateVsThroughput] => YSpec::Linear((0f32..max_value).into()),
         [] => {
             eprintln!("error: No data series selected. Add --throughput or --percentile options.");
             exit(1);
@@ -144,7 +150,7 @@ pub async fn plot_graph(conf: PlotCommand) -> Result<()> {
 
     let output_path = conf
         .output
-        .unwrap_or(reports[0].conf.default_output_file_name("png"));
+        .unwrap_or(reports[0].conf.default_output_file_name("svg"));
     let root = SVGBackend::new(&output_path, (2000, 1000)).into_drawing_area();
     root.fill(&WHITE).unwrap();
 
@@ -155,15 +161,27 @@ pub async fn plot_graph(conf: PlotCommand) -> Result<()> {
         .build_cartesian_2d(0f32..max_time, primary_y_spec)
         .unwrap();
 
-    chart
-        .configure_mesh()
-        .axis_desc_style(("sans-serif", 32).into_font())
-        .x_desc("time [s]")
-        .y_desc(scales[0].y_axis_label())
-        .x_label_style(("sans-serif", 24).into_font())
-        .y_label_style(("sans-serif", 24).into_font())
-        .draw()
-        .unwrap();
+    if conf.success_rate && conf.throughput {
+        chart
+            .configure_mesh()
+            .axis_desc_style(("sans-serif", 32).into_font())
+            .x_desc("throughput [req/s]")
+            .y_desc(scales[0].y_axis_label())
+            .x_label_style(("sans-serif", 24).into_font())
+            .y_label_style(("sans-serif", 24).into_font())
+            .draw()
+            .unwrap();
+    } else {
+        chart
+            .configure_mesh()
+            .axis_desc_style(("sans-serif", 32).into_font())
+            .x_desc("time [s]")
+            .y_desc(scales[0].y_axis_label())
+            .x_label_style(("sans-serif", 24).into_font())
+            .y_label_style(("sans-serif", 24).into_font())
+            .draw()
+            .unwrap();
+    }
 
     let colors = [&RED, &BLUE, &GREEN, &ORANGE, &MAGENTA, &BLACK];
     const SYMBOL_SIZE: u32 = 6;
@@ -235,8 +253,15 @@ fn report_series(report: &Report, color_index: usize, conf: &PlotCommand) -> Vec
     percentiles.sort_by(|a, b| a.partial_cmp(b).unwrap().reverse());
 
     series.extend(resp_time_series(report, color_index, &percentiles));
-    if conf.throughput {
-        series.push(throughput_series(report, color_index))
+    if conf.success_rate && conf.throughput {
+        series.push(success_rate_v_throughput_series(report, color_index))
+    } else {
+        if conf.throughput {
+            series.push(throughput_series(report, color_index))
+        }
+        if conf.success_rate {
+            series.push(success_rate_series(report, color_index))
+        }
     }
     series
 }
@@ -278,6 +303,38 @@ fn throughput_series(report: &Report, color_index: usize) -> Series {
             .log
             .iter()
             .map(|s| (s.time_s, s.req_throughput))
+            .collect(),
+    }
+}
+
+fn success_rate_series(report: &Report, color_index: usize) -> Series {
+    Series {
+        tags: report.conf.tags.clone(),
+        label: String::from("success_rate"),
+        color_index,
+        symbol_index: 0,
+        kind: SuccessRate,
+        data: report
+            .result
+            .log
+            .iter()
+            .map(|s| (s.time_s, ((s.request_count - s.error_count) / s.request_count) as f32))
+            .collect(),
+    }
+}
+
+fn success_rate_v_throughput_series(report: &Report, color_index: usize) -> Series {
+    Series {
+        tags: report.conf.tags.clone(),
+        label: String::from("throughput_vs_success_rate"),
+        color_index,
+        symbol_index: 2,
+        kind: SuccessRateVsThroughput,
+        data: report
+            .result
+            .log
+            .iter()
+            .map(|s| (s.req_throughput, ((s.request_count - s.error_count) / s.request_count) as f32))
             .collect(),
     }
 }

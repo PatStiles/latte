@@ -435,7 +435,6 @@ impl RpcConfigCmp<'_> {
             .unwrap_or_default()
     }
 
-    // TODO: Returns the set union of custom user parameters in both configurations.
 }
 
 impl<'a> Display for RpcConfigCmp<'a> {
@@ -451,9 +450,7 @@ impl<'a> Display for RpcConfigCmp<'a> {
             self.line("Cluster", "", |conf| {
                 OptionDisplay(conf.cluster_name.clone())
             }),
-            self.line("Cass. version", "", |conf| {
-                OptionDisplay(conf.chain_id.clone())
-            }),
+            self.line("Chain ID", "", |conf| OptionDisplay(conf.chain_id.clone())),
             self.line("Tags", "", |conf| conf.tags.iter().join(", ")),
         ];
 
@@ -463,31 +460,36 @@ impl<'a> Display for RpcConfigCmp<'a> {
 
         writeln!(f, "{}", fmt_horizontal_line()).unwrap();
 
-        //TODO: add params for comparison
-
         let lines: Vec<Box<dyn Display>> = vec![
             self.line("Threads", "", |conf| Quantity::from(conf.threads)),
-            //TODO: add connection
-            self.line("Concurrency", "req", |conf| {
+            self.line("Connection(s)", "", |conf| format!("{value:9}", value = conf.rpc_url.iter().join(", "))),
+            self.line("Concurrency", "reqs", |conf| {
                 Quantity::from(conf.concurrency)
             }),
-            self.line("Max rate(s)", "op/s", |conf| Quantity::from(conf.rate)),
+            self.line("Reqs / Workload", "reqs", |conf| {
+                Quantity::from(conf.num_req)
+            }),
+            self.line("Max Rate(s)", "req/s", |conf| 
+                match &conf.rate {
+                    Some(rates) => format!("{value:9}", value = rates.into_iter().map(|r| { format!("{}", style(r).bright().for_stdout()) }).collect::<Vec<String>>().join(", ")),
+                    None => format!("{value:9}", value = style("MAX RATE").bright().for_stdout()),
+                }),
             self.line("Warmup", "s", |conf| {
                 Quantity::from(conf.warmup_duration.seconds())
             }),
-            self.line("└─", "op", |conf| {
+            self.line("└─", "ops", |conf| {
                 Quantity::from(conf.warmup_duration.count())
             }),
             self.line("Run time", "s", |conf| {
                 Quantity::from(conf.run_duration.seconds()).with_precision(1)
             }),
-            self.line("└─", "op", |conf| {
+            self.line("└─", "ops", |conf| {
                 Quantity::from(conf.run_duration.count())
             }),
             self.line("Sampling", "s", |conf| {
                 Quantity::from(conf.sampling_interval.seconds()).with_precision(1)
             }),
-            self.line("└─", "op", |conf| {
+            self.line("└─", "", |conf| {
                 Quantity::from(conf.sampling_interval.count())
             }),
         ];
@@ -562,18 +564,18 @@ impl<'a> Display for BenchmarkCmp<'a> {
             self.line("CPU utilisation", "%", |s| {
                 Quantity::from(s.cpu_util).with_precision(1)
             }),
-            self.line("Cycles", "op", |s| Quantity::from(s.cycle_count)),
-            self.line("Errors", "op", |s| Quantity::from(s.error_count)),
+            self.line("Workloads", "ops", |s| Quantity::from(s.cycle_count)),
+            self.line("Successful Reqs", "reqs", |s| Quantity::from(s.request_count - s.error_count)),
             self.line("└─", "%", |s| {
                 Quantity::from(s.errors_ratio).with_precision(1)
             }),
-            self.line("Requests", "req", |s| Quantity::from(s.request_count)),
+            self.line("Failed Reqs", "reqs", |s| Quantity::from(s.error_count)),
+            self.line("└─", "%", |s| {
+                Quantity::from(s.errors_ratio).with_precision(1)
+            }),
+            self.line("Total Requests", "reqs", |s| Quantity::from(s.request_count)),
             self.line("└─", "req/op", |s| {
                 Quantity::from(s.requests_per_cycle).with_precision(1)
-            }),
-            self.line("Rows", "row", |s| Quantity::from(s.row_count)),
-            self.line("└─", "row/req", |s| {
-                Quantity::from(s.row_count_per_req).with_precision(1)
             }),
             self.line("Samples", "", |s| Quantity::from(s.log.len())),
             self.line("Mean sample size", "op", |s| {
@@ -592,11 +594,7 @@ impl<'a> Display for BenchmarkCmp<'a> {
                 .with_significance(self.cmp_req_throughput())
                 .with_orientation(1)
                 .into_box(),
-            self.line("└─", "row/s", |s| Quantity::from(s.row_throughput))
-                .with_significance(self.cmp_row_throughput())
-                .with_orientation(1)
-                .into_box(),
-            self.line("Mean cycle time", "ms", |s| {
+            self.line("Mean workload time", "ms", |s| {
                 Quantity::from(&s.cycle_time_ms).with_precision(3)
             })
             .with_significance(self.cmp_mean_resp_time())

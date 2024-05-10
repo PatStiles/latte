@@ -10,7 +10,6 @@ use hdrhistogram::Histogram;
 use rune::runtime::{Object, Shared};
 use rune::{Any, Value};
 use serde_json::value::RawValue;
-//use tokio::time::{Duration, Instant};
 use std::fmt::Debug;
 use try_lock::TryLock;
 
@@ -26,7 +25,6 @@ pub struct SessionStats {
     pub req_succ_count: u64,
     pub req_errors: HashSet<String>,
     pub req_error_count: u64,
-    pub row_count: u64,
     pub queue_length: u64,
     pub mean_queue_length: f32,
     pub resp_times_ns: Histogram<u64>,
@@ -85,7 +83,6 @@ impl Default for SessionStats {
             req_succ_count: 0,
             req_errors: HashSet::new(),
             req_error_count: 0,
-            row_count: 0,
             queue_length: 0,
             mean_queue_length: 0.0,
             resp_times_ns: Histogram::new(3).unwrap(),
@@ -97,7 +94,6 @@ impl Default for SessionStats {
 /// It also tracks query execution metrics such as number of requests, rows, response times etc.
 #[derive(Any)]
 pub struct Context {
-    //TODO: this may not be the best... but for now it works
     pub session: Arc<RpcClient<Http<reqwest::Client>>>,
     statements: HashMap<String, Arc<Request<Box<RawValue>>>>,
     pub stats: TryLock<SessionStats>,
